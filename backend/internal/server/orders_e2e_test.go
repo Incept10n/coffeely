@@ -66,17 +66,15 @@ func seedKDS(t *testing.T, e *testEnv) (pointID, menuA, menuB, baristaAccess, cl
 	return pointID, menuA, menuB, baristaAccess, clientAccess
 }
 
-func makeOrder(t *testing.T, e *testEnv, clientAccess, pointID, menuA, menuB string, slotStart, slotEnd time.Time) map[string]any {
+func makeOrder(t *testing.T, e *testEnv, clientAccess, pointID, menuA, menuB string) map[string]any {
 	t.Helper()
 	items := []map[string]any{{"menu_item_id": menuA, "qty": 1}}
 	if menuB != "" {
 		items = append(items, map[string]any{"menu_item_id": menuB, "qty": 2})
 	}
 	status, resp := e.doJSON(t, "POST", "/orders", clientAccess, map[string]any{
-		"point_id":          pointID,
-		"pickup_slot_start": slotStart.Format(time.RFC3339),
-		"pickup_slot_end":   slotEnd.Format(time.RFC3339),
-		"items":             items,
+		"point_id": pointID,
+		"items":    items,
 	})
 	if status != http.StatusCreated {
 		t.Fatalf("create order: статус %d: %v", status, resp)
@@ -91,19 +89,23 @@ func TestOrderAndQueueE2E(t *testing.T) {
 	t.Cleanup(e.srv.Close)
 
 	pointID, menuA, menuB, baristaAccess, clientAccess := seedKDS(t, e)
-	now := time.Now().Truncate(time.Minute)
-	slotStart := now.Add(30 * time.Minute)
-	slotEnd := slotStart.Add(5 * time.Minute)
 
-	// движок дедлайна: max(prep) = 180 + 120*2 → окно - 7 минут? Нет: deadline = min(start-prep)
-	// позиция A: 180s → start-3m; позиция B qty 2: 240s → start-4m. Итог: start-4m.
-	order := makeOrder(t, e, clientAccess, pointID, menuA, menuB, slotStart, slotEnd)
+	// движок дедлайна: сумма prep = 180 + 120*2 = 420 с → окно − 7 минут.
+	order := makeOrder(t, e, clientAccess, pointID, menuA, menuB)
 	deadline, err := time.Parse(time.RFC3339, order["deadline_at"].(string))
 	if err != nil {
 		t.Fatalf("deadline parse: %v", err)
 	}
-	if want := slotStart.Add(-4 * time.Minute); !deadline.Equal(want) {
+	slotStart, err := time.Parse(time.RFC3339, order["pickup_slot_start"].(string))
+	if err != nil {
+		t.Fatalf("slot parse: %v", err)
+	}
+	if want := slotStart.Add(-7 * time.Minute); !deadline.Equal(want) {
 		t.Fatalf("deadline: ожидали %v, получили %v", want, deadline)
+	}
+	// окно назначено с запасом на производство: дедлайн не в прошлом
+	if deadline.Before(time.Now()) {
+		t.Fatalf("дедлайн в прошлом: %v", deadline)
 	}
 	if order["status"] != "paid" {
 		t.Fatalf("статус нового заказа: %v", order["status"])
@@ -179,7 +181,6 @@ func TestRealtimeE2E(t *testing.T) {
 	t.Cleanup(e.srv.Close)
 
 	pointID, menuA, _, baristaAccess, clientAccess := seedKDS(t, e)
-	now := time.Now().Truncate(time.Minute)
 
 	// бариста слушает канал точки
 	wsURL := "ws" + strings.TrimPrefix(e.srv.URL, "http") + "/ws/points/" + pointID
@@ -195,7 +196,7 @@ func TestRealtimeE2E(t *testing.T) {
 
 	// новый заказ → событие order_created
 	go func() {
-		_ = makeOrder(t, e, clientAccess, pointID, menuA, "", now.Add(20*time.Minute), now.Add(25*time.Minute))
+		_ = makeOrder(t, e, clientAccess, pointID, menuA, "")
 	}()
 	msg := readWSMessage(t, conn, wsCtx)
 	if msg["type"] != "order_created" {
@@ -217,6 +218,30 @@ func TestRealtimeE2E(t *testing.T) {
 		t.Fatalf("ws: статус в событии: %v", got)
 	}
 
+	// клиент слушает свой канал: статус его заказа приходит без поллинга
+	clientWS := "ws" + strings.TrimPrefix(e.srv.URL, "http") + "/ws/orders"
+	clientCtx, clientCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer clientCancel()
+	clientConn, _, err := websocket.Dial(clientCtx, clientWS, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Authorization": []string{"Bearer " + clientAccess}},
+	})
+	if err != nil {
+		t.Fatalf("ws клиента: %v", err)
+	}
+	defer clientConn.Close(websocket.StatusNormalClosure, "")
+
+	status, _ = e.doJSON(t, "POST", "/barista/orders/"+orderID+"/status", baristaAccess, map[string]string{"status": "ready"})
+	if status != http.StatusOK {
+		t.Fatalf("ready: %d", status)
+	}
+	msg = readWSMessage(t, clientConn, clientCtx)
+	if msg["type"] != "order_status" {
+		t.Fatalf("ws клиента: событие не order_status: %v", msg)
+	}
+	if got := msg["order"].(map[string]any)["status"]; got != "ready" {
+		t.Fatalf("ws клиента: статус в событии: %v", got)
+	}
+
 	// чужая точка → 403
 	if status, _ := e.doJSON(t, "GET", "/ws/points/00000000-0000-0000-0000-000000000000", baristaAccess, nil); status != http.StatusForbidden {
 		t.Fatalf("ws чужая точка: ждём 403, получили %d", status)
@@ -230,10 +255,15 @@ func TestDeadlineMissE2E(t *testing.T) {
 	t.Cleanup(e.srv.Close)
 
 	pointID, menuA, _, baristaAccess, clientAccess := seedKDS(t, e)
-	// окно в прошлом → дедлайн уже пройден к моменту given_out
-	past := time.Now().Add(-1 * time.Hour)
-	order := makeOrder(t, e, clientAccess, pointID, menuA, "", past, past.Add(5*time.Minute))
+	order := makeOrder(t, e, clientAccess, pointID, menuA, "")
 	orderID := order["id"].(string)
+	// Дедлайн в прошлом: клиент не может заказать в прошлое, поэтому двигаем
+	// дедлайн напрямую в БД — проверяем фиксацию промаха к моменту given_out.
+	if _, err := e.pool.Exec(context.Background(),
+		`UPDATE orders SET deadline_at = now() - interval '1 hour' WHERE id = $1`, orderID,
+	); err != nil {
+		t.Fatalf("backdate deadline: %v", err)
+	}
 
 	for _, next := range []string{"in_production", "ready", "given_out"} {
 		status, resp := e.doJSON(t, "POST", "/barista/orders/"+orderID+"/status", baristaAccess, map[string]string{"status": next})

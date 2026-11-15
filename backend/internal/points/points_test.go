@@ -1,6 +1,9 @@
 package points
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestParseCapacity(t *testing.T) {
 	tests := []struct {
@@ -32,5 +35,45 @@ func TestParseHM(t *testing.T) {
 	}
 	if _, err := parseHM("abc"); err == nil {
 		t.Fatal("мусор должен давать ошибку")
+	}
+}
+
+func TestWindowGrid(t *testing.T) {
+	loc, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		t.Fatalf("tz: %v", err)
+	}
+	at := func(h, m int) time.Time { return time.Date(2026, 11, 16, h, m, 30, 0, loc) }
+
+	// 10:03 → окно 10:00–10:05 (округление вниз — «в каком окне момент»)
+	if start, end, open := windowAt(at(10, 3), loc, 480, 1200, 5); !open ||
+		!start.Equal(time.Date(2026, 11, 16, 10, 0, 0, 0, loc)) || !end.Equal(start.Add(5*time.Minute)) {
+		t.Fatalf("10:03 → %v %v %v", start, end, open)
+	}
+	// вне рабочих часов — не окно
+	if _, _, open := windowAt(at(21, 0), loc, 480, 1200, 5); open {
+		t.Fatal("21:00 должно быть закрыто")
+	}
+	// до открытия — первое окно дня
+	if start, _, _ := windowAt(at(6, 0), loc, 480, 1200, 5); !start.Equal(time.Date(2026, 11, 16, 8, 0, 0, 0, loc)) {
+		t.Fatalf("06:00 → %v", start)
+	}
+	// nextOpening: до открытия — сегодня, после — завтра
+	if got := nextOpening(at(6, 0), loc, 480); !got.Equal(time.Date(2026, 11, 16, 8, 0, 0, 0, loc)) {
+		t.Fatalf("nextOpening 06:00 → %v", got)
+	}
+	if got := nextOpening(at(21, 0), loc, 480); !got.Equal(time.Date(2026, 11, 17, 8, 0, 0, 0, loc)) {
+		t.Fatalf("nextOpening 21:00 → %v", got)
+	}
+}
+
+func TestOpenState(t *testing.T) {
+	loc, _ := time.LoadLocation("Europe/Moscow")
+	cfg := defaultCapacity() // 08:00–20:00
+	if open, _ := openState(cfg, "Europe/Moscow", time.Date(2026, 11, 16, 9, 0, 0, 0, loc)); !open {
+		t.Fatal("09:00 должно быть открыто")
+	}
+	if open, opensAt := openState(cfg, "Europe/Moscow", time.Date(2026, 11, 16, 7, 0, 0, 0, loc)); open || opensAt != "08:00" {
+		t.Fatalf("07:00: %v %q", open, opensAt)
 	}
 }

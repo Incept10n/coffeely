@@ -11,11 +11,12 @@ import (
 	"github.com/Incept10n/coffeely/backend/internal/auth"
 	"github.com/Incept10n/coffeely/backend/internal/barista"
 	"github.com/Incept10n/coffeely/backend/internal/config"
+	"github.com/Incept10n/coffeely/backend/internal/httpx"
 	"github.com/Incept10n/coffeely/backend/internal/orders"
 	"github.com/Incept10n/coffeely/backend/internal/points"
 )
 
-// New собираает mux со всеми маршрутами.
+// New собирает mux со всеми маршрутами; каждый запрос пишется в stdout.
 func New(pool *pgxpool.Pool, cfg config.Config) http.Handler {
 	mux := http.NewServeMux()
 
@@ -58,21 +59,22 @@ func New(pool *pgxpool.Pool, cfg config.Config) http.Handler {
 	baristaHandlers := barista.NewHandlers(barista.NewStore(pool))
 	baristaHandlers.RegisterRoutes(mux, authenticate)
 
-	// Заказы, KDS-очередь, realtime (веха M3) + клиентский флоу (M4)
+	// Заказы, KDS-очередь, realtime (M3) + клиентский флоу (M4)
 	pointsStore := points.NewStore(pool)
 	ordersHub := orders.NewHub()
-	ordersHandlers := orders.NewHandlers(orders.NewStore(pool, pointsStore.CheckWindowCapacity), ordersHub)
+	ordersHandlers := orders.NewHandlers(orders.NewStore(pool, pointsStore.PlanSlot), ordersHub)
 	mux.Handle("POST /orders", authenticate(http.HandlerFunc(ordersHandlers.Create)))
+	mux.Handle("GET /orders", authenticate(http.HandlerFunc(ordersHandlers.List)))
 	mux.Handle("GET /orders/{id}", authenticate(http.HandlerFunc(ordersHandlers.ByID)))
 	mux.Handle("GET /barista/queue", authenticate(http.HandlerFunc(ordersHandlers.Queue)))
 	mux.Handle("POST /barista/orders/{id}/status", authenticate(http.HandlerFunc(ordersHandlers.SetStatus)))
 	mux.Handle("GET /barista/metrics", authenticate(http.HandlerFunc(ordersHandlers.Metrics)))
 	mux.Handle("GET /ws/points/{id}", authenticate(http.HandlerFunc(ordersHandlers.PointWS)))
+	mux.Handle("GET /ws/orders", authenticate(http.HandlerFunc(ordersHandlers.UserWS)))
 
 	pointsHandlers := points.NewHandlers(pointsStore)
 	mux.Handle("GET /points", authenticate(http.HandlerFunc(pointsHandlers.List)))
 	mux.Handle("GET /points/{id}/menu", authenticate(http.HandlerFunc(pointsHandlers.Menu)))
-	mux.Handle("GET /points/{id}/windows", authenticate(http.HandlerFunc(pointsHandlers.Windows)))
 
-	return mux
+	return httpx.LogRequests(mux)
 }

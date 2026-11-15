@@ -1,5 +1,6 @@
-// Package orders — заказы, KDS-очередь баристы, метрики дедлайнов (веха M3).
-// Движок ёмкости (лимит заказов на окно) подключается в M4.
+// Package orders — заказы, KDS-очередь баристы, метрики дедлайнов (M3) и
+// клиентский флоу v2 (M4): клиент не выбирает окно — точка назначает его сама
+// по текущей очереди и ёмкости (points.PlanSlot).
 package orders
 
 import (
@@ -12,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Incept10n/coffeely/backend/internal/httpx"
+	"github.com/Incept10n/coffeely/backend/internal/points"
 )
 
 var (
@@ -21,18 +23,17 @@ var (
 	ErrBadTransition    = httpx.NewError(409, "bad_transition", "недопустимый переход статуса")
 	ErrEmptyOrder       = httpx.NewError(400, "empty_order", "заказ без позиций")
 	ErrPointInactive    = httpx.NewError(409, "point_inactive", "точка неактивна")
-	ErrBadPickupWindow  = httpx.NewError(400, "bad_pickup_window", "некорректное окно выдачи")
 	ErrMenuItemNotFound = httpx.NewError(400, "menu_item_not_found", "позиция меню недоступна в этой точке")
 )
 
 // Статусы заказов (совпадают с enum в БД).
 const (
-	StatusCreated       = "created"
-	StatusPaid          = "paid"
-	StatusInProduction  = "in_production"
-	StatusReady         = "ready"
-	StatusGivenOut      = "given_out"
-	StatusCancelled     = "cancelled"
+	StatusCreated      = "created"
+	StatusPaid         = "paid"
+	StatusInProduction = "in_production"
+	StatusReady        = "ready"
+	StatusGivenOut     = "given_out"
+	StatusCancelled    = "cancelled"
 )
 
 // allowedTransitions — граф переходов, ведут бариста (M3) и клиент (отмена в M4).
@@ -44,17 +45,19 @@ var allowedTransitions = map[string]map[string]bool{
 
 // Order — заказ как он уходит в API.
 type Order struct {
-	ID          string    `json:"id"`
-	Number      int64     `json:"number"`
-	PointID     string    `json:"point_id"`
-	ClientID    string    `json:"client_id"`
-	Status      string    `json:"status"`
-	SlotStart   time.Time `json:"pickup_slot_start"`
-	SlotEnd     time.Time `json:"pickup_slot_end"`
-	Deadline    time.Time `json:"deadline_at"`
-	TotalMinor  int64     `json:"total_minor"`
-	CreatedAt   time.Time `json:"created_at"`
-	Items       []Item    `json:"items,omitempty"`
+	ID         string    `json:"id"`
+	Number     int64     `json:"number"`
+	PointID    string    `json:"point_id"`
+	PointTitle string    `json:"point_title,omitempty"`
+	ClientID   string    `json:"client_id"`
+	Status     string    `json:"status"`
+	SlotStart  time.Time `json:"pickup_slot_start"`
+	SlotEnd    time.Time `json:"pickup_slot_end"`
+	// Deadline — когда заказ должен быть готов. Клиент видит его как «готов к HH:MM».
+	Deadline   time.Time `json:"deadline_at"`
+	TotalMinor int64     `json:"total_minor"`
+	CreatedAt  time.Time `json:"created_at"`
+	Items      []Item    `json:"items,omitempty"`
 }
 
 // Item — позиция заказа.
@@ -65,25 +68,27 @@ type Item struct {
 	PriceMinor int64  `json:"price_minor"`
 }
 
+// SlotPlanner — движок ёмкости точки (points.Store.PlanSlot).
+type SlotPlanner func(ctx context.Context, tx pgx.Tx, pointID string, ownPrep time.Duration, now time.Time) (points.SlotPlan, error)
+
 // Store — SQL для заказов.
 type Store struct {
 	pool *pgxpool.Pool
-	// capacityChecker — движок ёмкости (points.CheckWindowCapacity); подменяется в тестах.
-	capacityChecker func(ctx context.Context, tx pgx.Tx, pointID string, slotStart time.Time) error
+	// planner — движок ёмкости: назначает окно производства по очереди точки.
+	planner SlotPlanner
 }
 
-func NewStore(pool *pgxpool.Pool, capacityChecker func(ctx context.Context, tx pgx.Tx, pointID string, slotStart time.Time) error) *Store {
-	return &Store{pool: pool, capacityChecker: capacityChecker}
+func NewStore(pool *pgxpool.Pool, planner SlotPlanner) *Store {
+	return &Store{pool: pool, planner: planner}
 }
 
-// Create создаёт заказ (v1: статус paid — «оплата в кассе при получении», M4
-// добавит проверку ёмкости окна). deadline_at = начало окна − сумма prep_seconds.
-func (s *Store) Create(ctx context.Context, pointID, clientID string, slotStart, slotEnd time.Time, items []Item) (Order, error) {
+// Create создаёт заказ (v1: статус paid — «оплата в кассе при получении»).
+// Окно производства не приходит от клиента: его назначает движок ёмкости —
+// ближайшее окно, в котором точка успеет сделать заказ после текущей очереди.
+// deadline_at = начало окна − сумма prep_seconds (ядро AIK-11).
+func (s *Store) Create(ctx context.Context, pointID, clientID string, items []Item, now time.Time) (Order, error) {
 	if len(items) == 0 {
 		return Order{}, ErrEmptyOrder
-	}
-	if !slotEnd.After(slotStart) {
-		return Order{}, ErrBadPickupWindow
 	}
 
 	tx, err := s.pool.Begin(ctx)
@@ -92,7 +97,7 @@ func (s *Store) Create(ctx context.Context, pointID, clientID string, slotStart,
 	}
 	defer tx.Rollback(ctx)
 
-	// Блокируем точку и меню в одной транзакции.
+	// Блокируем точку: она же сериализует назначение окон.
 	var pointActive bool
 	if err := tx.QueryRow(ctx,
 		`SELECT is_active FROM points WHERE id = $1 FOR UPDATE`, pointID,
@@ -106,15 +111,12 @@ func (s *Store) Create(ctx context.Context, pointID, clientID string, slotStart,
 		return Order{}, ErrPointInactive
 	}
 
-	// Движок ёмкости v1 (M4): лимит заказов на окно из capacity_config точки.
-	// До вставки (иначе транзакция увидит сам заказ) и под advisory-локом окна.
-	if err := s.capacityChecker(ctx, tx, pointID, slotStart); err != nil {
-		return Order{}, err
-	}
-
-	var deadline time.Time
+	var ownPrep time.Duration
 	var total int64
 	for _, it := range items {
+		if it.Qty <= 0 {
+			return Order{}, ErrEmptyOrder
+		}
 		var prep int
 		var price int64
 		err := tx.QueryRow(ctx, `
@@ -127,30 +129,24 @@ func (s *Store) Create(ctx context.Context, pointID, clientID string, slotStart,
 			}
 			return Order{}, fmt.Errorf("orders: menu item: %w", err)
 		}
-		if it.Qty <= 0 {
-			return Order{}, ErrEmptyOrder
-		}
 		total += price * int64(it.Qty)
-		if prep*it.Qty > 0 {
-			d := slotStart.Add(-time.Duration(prep*it.Qty) * time.Second)
-			if deadline.IsZero() || d.Before(deadline) {
-				deadline = d
-			}
-		}
+		ownPrep += time.Duration(prep*it.Qty) * time.Second
 	}
-	if deadline.IsZero() {
-		deadline = slotStart
+
+	plan, err := s.planner(ctx, tx, pointID, ownPrep, now)
+	if err != nil {
+		return Order{}, err
 	}
 
 	o := Order{
 		PointID: pointID, ClientID: clientID, Status: StatusPaid,
-		SlotStart: slotStart, SlotEnd: slotEnd, Deadline: deadline, TotalMinor: total,
+		SlotStart: plan.Start, SlotEnd: plan.End, Deadline: plan.Deadline, TotalMinor: total,
 	}
 	err = tx.QueryRow(ctx, `
 		INSERT INTO orders (point_id, client_id, status, pickup_slot_start, pickup_slot_end, deadline_at, total_minor)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id, order_number, created_at`,
-		pointID, clientID, StatusPaid, slotStart, slotEnd, deadline, total,
+		pointID, clientID, StatusPaid, plan.Start, plan.End, plan.Deadline, total,
 	).Scan(&o.ID, &o.Number, &o.CreatedAt)
 	if err != nil {
 		return Order{}, fmt.Errorf("orders: insert: %w", err)
@@ -176,7 +172,49 @@ func (s *Store) Create(ctx context.Context, pointID, clientID string, slotStart,
 	if err := tx.Commit(ctx); err != nil {
 		return Order{}, fmt.Errorf("orders: commit: %w", err)
 	}
+	o.Items, err = s.items(ctx, o.ID)
+	if err != nil {
+		return Order{}, err
+	}
 	return o, nil
+}
+
+// ListByClient — «мои заказы»: активные сверху, затем история (последние limit).
+func (s *Store) ListByClient(ctx context.Context, clientID string, limit int) ([]Order, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT o.id, o.order_number, o.point_id, COALESCE(p.title, ''), o.client_id, o.status,
+		       o.pickup_slot_start, o.pickup_slot_end, o.deadline_at, o.total_minor, o.created_at
+		FROM orders o
+		LEFT JOIN points p ON p.id = o.point_id
+		WHERE o.client_id = $1
+		ORDER BY (o.status IN ('paid', 'in_production', 'ready')) DESC, o.created_at DESC
+		LIMIT $2`, clientID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("orders: list by client: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]Order, 0, limit)
+	for rows.Next() {
+		var o Order
+		if err := rows.Scan(&o.ID, &o.Number, &o.PointID, &o.PointTitle, &o.ClientID, &o.Status,
+			&o.SlotStart, &o.SlotEnd, &o.Deadline, &o.TotalMinor, &o.CreatedAt); err != nil {
+			return nil, fmt.Errorf("orders: scan: %w", err)
+		}
+		out = append(out, o)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if out[i].Items, err = s.items(ctx, out[i].ID); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // ByID возвращает заказ с позициями; для клиента — только свой.

@@ -14,9 +14,9 @@ type Handlers struct {
 
 func NewHandlers(store *Store) *Handlers { return &Handlers{store: store} }
 
-// GET /points — список активных точек.
+// GET /points — активные точки с текущей загрузкой: сколько ждать и открыто ли.
 func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
-	list, err := h.store.List(r.Context())
+	list, err := h.store.List(r.Context(), timeNow())
 	if err != nil {
 		httpx.WriteError(w, err)
 		return
@@ -38,28 +38,6 @@ func (h *Handlers) Menu(w http.ResponseWriter, r *http.Request) {
 		menu = []MenuItem{}
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"menu": menu})
-}
-
-// GET /points/{id}/windows?day=YYYY-MM-DD — окна выдачи со свободной ёмкостью.
-func (h *Handlers) Windows(w http.ResponseWriter, r *http.Request) {
-	day := timeNow()
-	if q := r.URL.Query().Get("day"); q != "" {
-		parsed, err := time.Parse("2006-01-02", q)
-		if err != nil {
-			httpx.WriteError(w, httpx.ErrBadRequest)
-			return
-		}
-		day = parsed
-	}
-	windows, err := h.store.Windows(r.Context(), r.PathValue("id"), day)
-	if err != nil {
-		httpx.WriteError(w, err)
-		return
-	}
-	if windows == nil {
-		windows = []Window{}
-	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"windows": windows})
 }
 
 var timeNow = time.Now

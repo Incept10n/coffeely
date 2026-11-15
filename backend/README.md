@@ -46,7 +46,14 @@ go run ./cmd/migrate drop   # снести всё (только dev!)
 | `YANDEX_CLIENT_ID` / `YANDEX_CLIENT_SECRET` | пусто | OAuth2 Yandex ID |
 | `YANDEX_REDIRECT_URL` | `http://localhost:8080/auth/yandex/callback` | callback OAuth |
 
-## API (веха M2)
+## Логирование
+
+Каждый входящий запрос пишется в stdout одной JSON-строкой (`slog`, middleware
+`httpx.LogRequests`): `method`, `path`, `status`, `bytes`, `duration_ms`, `remote`,
+`user_agent`, `request_id`. 4xx — WARN, 5xx — ERROR. `X-Request-Id` принимается от
+клиента (nginx) или генерируется и возвращается в ответе.
+
+## API
 
 | Метод | Путь | Доступ | Что делает |
 |---|---|---|---|
@@ -57,8 +64,33 @@ go run ./cmd/migrate drop   # снести всё (только dev!)
 | GET | `/auth/me` | Bearer | текущий пользователь (id, email, роль) |
 | GET | `/auth/yandex/start` | все | редирект на Yandex ID |
 | GET | `/auth/yandex/callback` | все | вход/регистрация по Yandex ID, связка по email |
+| GET | `/points` | Bearer | активные точки + загрузка: `load.wait_seconds`, `load.active_orders`, `load.is_open`, `load.opens_at` |
+| GET | `/points/{id}/menu` | Bearer | меню точки (цена, `prep_seconds`) |
+| POST | `/orders` | Bearer | создать заказ: `{point_id, items[]}`. **Окно не передаётся** — его назначает движок ёмкости |
+| GET | `/orders` | Bearer | «мои заказы»: активные сверху, затем история (30) |
+| GET | `/orders/{id}` | Bearer | статус заказа (владелец или бариста точки) |
+| GET | `/barista/queue` | Bearer barista | KDS-очередь с дедлайнами и срочностью |
+| POST | `/barista/orders/{id}/status` | Bearer barista | переход `paid → in_production → ready → given_out` |
+| GET | `/barista/metrics?day=YYYY-MM-DD` | Bearer barista | % соблюдённых дедлайнов за день |
+| GET | `/ws/points/{id}` | Bearer barista | realtime точки: новые заказы и статусы |
+| GET | `/ws/orders` | Bearer | realtime клиента: статусы его заказов |
 | POST | `/barista/claim-invite` | Bearer | одноразовый код → роль barista + привязка к точке |
 | POST | `/admin/invite-codes` | Bearer owner | выпуск кода приглашения для точки |
+
+### Движок ёмкости (v2, без выбора окон)
+
+Клиент не выбирает «окошки». `POST /orders` назначает окно сам (`points.PlanSlot`):
+
+1. `queue` — сумма `prep_seconds × qty` по активным заказам точки (`paid`, `in_production`);
+2. готовность = `сейчас + queue + prep заказа`, округлённая вверх по сетке окон точки;
+3. берётся первое окно с свободной ёмкостью (`max_orders_per_window`), окно должно
+   начинаться не раньше готовности — бариста получает полный `prep` до начала окна;
+4. `deadline_at = начало окна − prep заказа` — это время, которое видит гость;
+5. дальше `max_lead` (120 минут) от «сейчас» — отказ `409 point_busy`;
+6. гонка двух клиентов на одно окно закрыта `pg_advisory_xact_lock` по точке.
+
+Вне рабочих часов (`work_start`/`work_end` в `capacity_config`, таймзона точки)
+окно переносится на следующее открытие.
 
 E2E-тесты (`go test ./...`) гоняют все флоу против тестовой БД `coffeely_test`
 (пересоздаётся с нуля); Yandex ID — против mock-OIDC. Без доступного Postgres тесты скипаются.

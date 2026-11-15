@@ -10,12 +10,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
+	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
-	"github.com/golang-migrate/migrate/v4"
 
 	"github.com/Incept10n/coffeely/backend/internal/config"
 )
@@ -57,6 +58,12 @@ func main() {
 	}
 
 	if err != nil {
+		// «нечего применять» — это успех: команда идемпотентна (initContainer,
+		// повторный деплой). Раньше возвращала exit 1.
+		if errors.Is(err, migrate.ErrNoChange) {
+			fmt.Println("migrate: no change")
+			return
+		}
 		fmt.Fprintln(os.Stderr, "migrate:", err)
 		os.Exit(1)
 	}

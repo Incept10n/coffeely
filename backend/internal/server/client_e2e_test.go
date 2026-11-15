@@ -1,11 +1,11 @@
 package server
 
-// E2E-тесты вехи M4: точки, меню, окна с ёмкостью, заказ клиента.
+// E2E-тесты клиентского флоу: точки с загрузкой, меню, заказ без выбора окна,
+// «мои заказы», назначение окна движком ёмкости.
 
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -52,33 +52,18 @@ func registerClient(t *testing.T, e *testEnv) string {
 	return access
 }
 
-// freeWindow находит будущее окно со свободным местом (день сегодня, иначе завтра).
-func freeWindow(t *testing.T, e *testEnv, access, pointID string) map[string]any {
+func parseTime(t *testing.T, v any) time.Time {
 	t.Helper()
-	for _, dayOffset := range []time.Duration{0, 24 * time.Hour} {
-		day := timeNowAdd(dayOffset)
-		status, resp := e.doJSON(t, "GET", "/points/"+pointID+"/windows?day="+day.Format("2006-01-02"), access, nil)
-		if status != http.StatusOK {
-			t.Fatalf("windows: %d: %v", status, resp)
-		}
-		windows, _ := resp["windows"].([]any)
-		for _, w := range windows {
-			win := w.(map[string]any)
-			if win["passed"].(bool) {
-				continue
-			}
-			if win["free"].(float64) >= 1 {
-				return win
-			}
-		}
+	s, _ := v.(string)
+	ts, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		t.Fatalf("время %q: %v", s, err)
 	}
-	t.Fatal("не найдено будущее окно со свободной ёмкостью")
-	return nil
+	return ts
 }
 
-func timeNowAdd(d time.Duration) time.Time { return time.Now().Add(d) }
-
-// Тест: список точек → меню → окно → заказ; второй клиент на то же окно получает отказ.
+// Тест: точки с загрузкой → меню → заказ без окна → окно назначено движком →
+// «мои заказы» → второй заказ получает следующее окно → бариста видит очередь.
 func TestClientFlowE2E(t *testing.T) {
 	e := newTestEnv(t)
 	e.srv = httptest.NewServer(e.handler)
@@ -88,13 +73,18 @@ func TestClientFlowE2E(t *testing.T) {
 	clientA := registerClient(t, e)
 	clientB := registerClient(t, e)
 
-	// список точек
+	// список точек: загрузка нулевая, точка открыта
 	status, resp := e.doJSON(t, "GET", "/points", clientA, nil)
 	if status != http.StatusOK {
 		t.Fatalf("points: %d: %v", status, resp)
 	}
-	if len(resp["points"].([]any)) != 2 {
+	points := resp["points"].([]any)
+	if len(points) != 2 {
 		t.Fatalf("points: ожидали 2, получили %v", resp["points"])
+	}
+	load := points[0].(map[string]any)["load"].(map[string]any)
+	if load["wait_seconds"].(float64) != 0 || load["is_open"] != true {
+		t.Fatalf("load пустой точки: %v", load)
 	}
 
 	// меню
@@ -103,63 +93,88 @@ func TestClientFlowE2E(t *testing.T) {
 		t.Fatalf("menu: %d: %v", status, resp)
 	}
 
-	// окна: первое будущее со свободным местом
-	win := freeWindow(t, e, clientA, pointTight)
-	start, end := win["start"].(string), win["end"].(string)
-
-	orderBody := map[string]any{
-		"point_id":          pointTight,
-		"pickup_slot_start": start,
-		"pickup_slot_end":   end,
-		"items":             []map[string]any{{"menu_item_id": menuID, "qty": 1}},
-	}
-
-	// клиент A берёт окно
-	status, resp = e.doJSON(t, "POST", "/orders", clientA, orderBody)
+	// заказ без окна: клиент не выбирает окошки
+	before := time.Now()
+	status, resp = e.doJSON(t, "POST", "/orders", clientA, map[string]any{
+		"point_id": pointTight,
+		"items":    []map[string]any{{"menu_item_id": menuID, "qty": 1}},
+	})
 	if status != http.StatusCreated {
 		t.Fatalf("order A: %d: %v", status, resp)
 	}
-	_ = resp["id"].(string) // orderA не нужен далее — проверяем число и дедлайн
-	orderANumber := int64(resp["number"].(float64))
-	if orderANumber < 1 {
-		t.Fatalf("order A number: %v", resp["number"])
+	orderAID, _ := resp["id"].(string)
+	if resp["status"] != "paid" {
+		t.Fatalf("статус нового заказа: %v", resp["status"])
 	}
-	// точное время готовности: дедлайн = окно − prep (120s)
-	deadline, err := time.Parse(time.RFC3339, resp["deadline_at"].(string))
-	if err != nil {
-		t.Fatalf("deadline: %v", err)
+	if resp["number"].(float64) < 1 {
+		t.Fatalf("номер заказа: %v", resp["number"])
 	}
-	slotStart, _ := time.Parse(time.RFC3339, start)
+	slotStart := parseTime(t, resp["pickup_slot_start"])
+	slotEnd := parseTime(t, resp["pickup_slot_end"])
+	deadline := parseTime(t, resp["deadline_at"])
+
+	// окно назначено в будущем и выровнено по сетке 5 минут
+	if !slotStart.After(before) {
+		t.Fatalf("окно в прошлом: %v (сейчас %v)", slotStart, before)
+	}
+	moscow, _ := time.LoadLocation("Europe/Moscow")
+	if slotStart.In(moscow).Minute()%5 != 0 || slotStart.In(moscow).Second() != 0 {
+		t.Fatalf("окно не выровнено по сетке 5 минут: %v", slotStart)
+	}
+	if slotEnd.Sub(slotStart) != 5*time.Minute {
+		t.Fatalf("длина окна: %v", slotEnd.Sub(slotStart))
+	}
+	// точное время готовности = окно − prep (120 с)
 	if want := slotStart.Add(-120 * time.Second); !deadline.Equal(want) {
 		t.Fatalf("deadline: ожидали %v, получили %v", want, deadline)
 	}
 
-	// клиент B на то же окно → отказ (ёмкость исчерпана)
-	status, resp = e.doJSON(t, "POST", "/orders", clientB, orderBody)
-	if status != http.StatusConflict {
-		t.Fatalf("order B same window: ждём 409, получили %d: %v", status, resp)
+	// «мои заказы»: заказ виден клиенту, с названием точки
+	status, resp = e.doJSON(t, "GET", "/orders", clientA, nil)
+	if status != http.StatusOK {
+		t.Fatalf("мои заказы: %d: %v", status, resp)
 	}
-	if code, _ := resp["code"].(string); code != "window_full" {
-		t.Fatalf("order B: код ошибки: %v", resp["code"])
+	myOrders := resp["orders"].([]any)
+	if len(myOrders) != 1 {
+		t.Fatalf("мои заказы: ожидали 1, получили %d", len(myOrders))
+	}
+	if title, _ := myOrders[0].(map[string]any)["point_title"].(string); title != "Узкая точка" {
+		t.Fatalf("point_title: %v", title)
 	}
 
-	// клиент B берёт другое окно — проходит
-	win2 := freeWindow(t, e, clientB, pointTight)
-	if win2["start"] == win["start"] {
-		t.Fatal("окна совпали — тест некорректен")
+	// у другого клиента заказов нет
+	_, other := e.doJSON(t, "GET", "/orders", clientB, nil)
+	if len(other["orders"].([]any)) != 0 {
+		t.Fatalf("чужие заказы видны: %v", other["orders"])
 	}
-	orderBody2 := map[string]any{
-		"point_id":          pointTight,
-		"pickup_slot_start": win2["start"].(string),
-		"pickup_slot_end":   win2["end"].(string),
-		"items":             []map[string]any{{"menu_item_id": menuID, "qty": 1}},
+
+	// загрузка точки теперь видна в списке
+	_, resp = e.doJSON(t, "GET", "/points", clientB, nil)
+	var tightLoad map[string]any
+	for _, p := range resp["points"].([]any) {
+		pm := p.(map[string]any)
+		if pm["id"] == pointTight {
+			tightLoad = pm["load"].(map[string]any)
+		}
 	}
-	status, _ = e.doJSON(t, "POST", "/orders", clientB, orderBody2)
+	if tightLoad["wait_seconds"].(float64) != 120 {
+		t.Fatalf("загрузка точки: %v", tightLoad)
+	}
+
+	// второй заказ: окно не то же (ёмкость 1 на окно + очередь) — клиент не получает отказ
+	status, resp = e.doJSON(t, "POST", "/orders", clientB, map[string]any{
+		"point_id": pointTight,
+		"items":    []map[string]any{{"menu_item_id": menuID, "qty": 1}},
+	})
 	if status != http.StatusCreated {
-		t.Fatalf("order B other window: %d", status)
+		t.Fatalf("order B: %d: %v", status, resp)
+	}
+	slotB := parseTime(t, resp["pickup_slot_start"])
+	if !slotB.After(slotStart) {
+		t.Fatalf("второй заказ в то же окно: %v vs %v", slotB, slotStart)
 	}
 
-	// статус виден баристе точки (seed баристы как в M3)
+	// статус виден баристе точки
 	_, _, _, baristaAccess, _ := seedKDSForPoint(t, e, pointTight)
 	status, resp = e.doJSON(t, "GET", "/barista/queue", baristaAccess, nil)
 	if status != http.StatusOK {
@@ -168,44 +183,53 @@ func TestClientFlowE2E(t *testing.T) {
 	if got := len(resp["orders"].([]any)); got != 2 {
 		t.Fatalf("queue: ожидали 2 заказа, получили %d", got)
 	}
+
+	// смена статуса баристой видна клиенту в его заказе
+	status, resp = e.doJSON(t, "POST", "/barista/orders/"+orderAID+"/status", baristaAccess, map[string]string{"status": "in_production"})
+	if status != http.StatusOK {
+		t.Fatalf("in_production: %d: %v", status, resp)
+	}
+	_, resp = e.doJSON(t, "GET", "/orders/"+orderAID, clientA, nil)
+	if resp["status"] != "in_production" {
+		t.Fatalf("клиент не видит статус: %v", resp["status"])
+	}
 }
 
-// Дефолтная ёмкость (пустой capacity_config): 3 заказа на окно, 4-й — отказ.
-func TestDefaultCapacityE2E(t *testing.T) {
+// Ёмкость окна: при prep=0 заказы пакуются в окно до лимита, затем едут дальше.
+func TestWindowCapacityE2E(t *testing.T) {
 	e := newTestEnv(t)
 	e.srv = httptest.NewServer(e.handler)
 	t.Cleanup(e.srv.Close)
 
 	_, pointDefault, _ := seedClientFlow(t, e)
-	// отдельное меню для дефолтной точки (в seedClientFlow меню только у узкой)
 	ctx := context.Background()
 	var menuID string
 	if err := e.pool.QueryRow(ctx,
-		`INSERT INTO menu_items (point_id, title, price_minor, prep_seconds) VALUES ($1, 'Американо', 18000, 60) RETURNING id`,
+		`INSERT INTO menu_items (point_id, title, price_minor, prep_seconds) VALUES ($1, 'Американо', 18000, 0) RETURNING id`,
 		pointDefault,
 	).Scan(&menuID); err != nil {
 		t.Fatalf("seed menu default: %v", err)
 	}
 
-	clients := []string{registerClient(t, e), registerClient(t, e), registerClient(t, e), registerClient(t, e)}
-	win := freeWindow(t, e, clients[0], pointDefault)
-
-	orderBody := map[string]any{
-		"point_id":          pointDefault,
-		"pickup_slot_start": win["start"].(string),
-		"pickup_slot_end":   win["end"].(string),
-		"items":             []map[string]any{{"menu_item_id": menuID, "qty": 1}},
+	body := map[string]any{
+		"point_id": pointDefault,
+		"items":    []map[string]any{{"menu_item_id": menuID, "qty": 1}},
 	}
-
-	for i, access := range clients[:3] {
-		status, resp := e.doJSON(t, "POST", "/orders", access, orderBody)
+	var slots []time.Time
+	for i := 0; i < 4; i++ {
+		access := registerClient(t, e)
+		status, resp := e.doJSON(t, "POST", "/orders", access, body)
 		if status != http.StatusCreated {
 			t.Fatalf("заказ %d: %d: %v", i, status, resp)
 		}
+		slots = append(slots, parseTime(t, resp["pickup_slot_start"]))
 	}
-	status, resp := e.doJSON(t, "POST", "/orders", clients[3], orderBody)
-	if status != http.StatusConflict {
-		t.Fatalf("заказ 4: ждём 409, получили %d: %v", status, resp)
+	// первые три — одно окно (лимит 3), четвёртый — следующее
+	if !slots[0].Equal(slots[2]) {
+		t.Fatalf("первые три заказа должны попасть в одно окно: %v", slots)
+	}
+	if !slots[3].After(slots[2]) {
+		t.Fatalf("четвёртый заказ должен уехать в следующее окно: %v", slots)
 	}
 }
 
@@ -228,5 +252,5 @@ func seedKDSForPoint(t *testing.T, e *testEnv, pointID string) (_, _, _, barista
 	if err != nil {
 		t.Fatalf("barista token: %v", err)
 	}
-	return fmt.Sprintf("%p", e), "", "", access, ""
+	return "", "", "", access, ""
 }

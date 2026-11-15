@@ -23,6 +23,9 @@ type Hub struct {
 
 func NewHub() *Hub { return &Hub{subs: make(map[string]map[chan []byte]struct{})} }
 
+// UserChannel — канал клиента в общем Hub (отдельное пространство ключей).
+func UserChannel(userID string) string { return "user:" + userID }
+
 // Subscribe регистрирует подписчика точки; cancel отписывает.
 func (h *Hub) Subscribe(pointID string) (<-chan []byte, func()) {
 	ch := make(chan []byte, 32)
@@ -74,16 +77,14 @@ func NewHandlers(store *Store, hub *Hub) *Handlers {
 
 type createOrderRequest struct {
 	PointID string `json:"point_id"`
-	// RFC3339, например "2026-11-15T10:00:00+03:00"
-	PickupSlotStart time.Time `json:"pickup_slot_start"`
-	PickupSlotEnd   time.Time `json:"pickup_slot_end"`
-	Items           []struct {
+	Items   []struct {
 		MenuItemID string `json:"menu_item_id"`
 		Qty        int    `json:"qty"`
 	} `json:"items"`
 }
 
-// POST /orders — создание заказа клиентом.
+// POST /orders — создание заказа клиентом. Окно выдачи не передаётся:
+// его назначает движок ёмкости по текущей очереди точки.
 func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	session, ok := auth.FromContext(r.Context())
 	if !ok || session.Role != "client" && session.Role != "barista" {
@@ -99,13 +100,31 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	for i, it := range req.Items {
 		items[i] = Item{MenuItemID: it.MenuItemID, Qty: it.Qty}
 	}
-	order, err := h.store.Create(r.Context(), req.PointID, session.UserID, req.PickupSlotStart, req.PickupSlotEnd, items)
+	order, err := h.store.Create(r.Context(), req.PointID, session.UserID, items, timeNow())
 	if err != nil {
 		httpx.WriteError(w, err)
 		return
 	}
-	h.hub.Publish(order.PointID, json.RawMessage(jsonRaw(map[string]any{"type": "order_created", "order": order})))
+	event := json.RawMessage(jsonRaw(map[string]any{"type": "order_created", "order": order}))
+	// Бариста точки — новый заказ в KDS; клиент — статус своего заказа.
+	h.hub.Publish(order.PointID, event)
+	h.hub.Publish(UserChannel(order.ClientID), event)
 	httpx.WriteJSON(w, http.StatusCreated, order)
+}
+
+// GET /orders — «мои заказы»: активные сверху, затем история.
+func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
+	session, ok := auth.FromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, httpx.ErrUnauthorized)
+		return
+	}
+	list, err := h.store.ListByClient(r.Context(), session.UserID, 30)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"orders": list})
 }
 
 // GET /orders/{id} — статус заказа: владелец-клиент или бариста точки.
@@ -216,7 +235,9 @@ func (h *Handlers) SetStatus(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, err)
 		return
 	}
-	h.hub.Publish(pointID, json.RawMessage(jsonRaw(map[string]any{"type": "order_status", "order": updated})))
+	event := json.RawMessage(jsonRaw(map[string]any{"type": "order_status", "order": updated}))
+	h.hub.Publish(pointID, event)
+	h.hub.Publish(UserChannel(updated.ClientID), event)
 	httpx.WriteJSON(w, http.StatusOK, updated)
 }
 
@@ -276,6 +297,7 @@ func (h *Handlers) PointWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close(websocket.StatusInternalError, "server closing")
+	clearServerDeadlines(w)
 
 	events, cancel := h.hub.Subscribe(pointID)
 	defer cancel()
@@ -312,3 +334,66 @@ func (h *Handlers) PointWS(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
+// GET /ws/orders — realtime-канал клиента: статусы его заказов без поллинга.
+func (h *Handlers) UserWS(w http.ResponseWriter, r *http.Request) {
+	session, ok := auth.FromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, httpx.ErrUnauthorized)
+		return
+	}
+
+	conn, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close(websocket.StatusInternalError, "server closing")
+	clearServerDeadlines(w)
+
+	events, cancel := h.hub.Subscribe(UserChannel(session.UserID))
+	defer cancel()
+
+	wsCtx, wsCancel := context.WithCancel(r.Context())
+	defer wsCancel()
+	go func() {
+		defer wsCancel()
+		for {
+			if _, _, err := conn.Read(wsCtx); err != nil {
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-wsCtx.Done():
+			conn.Close(websocket.StatusNormalClosure, "")
+			return
+		case msg, open := <-events:
+			if !open {
+				conn.Close(websocket.StatusNormalClosure, "")
+				return
+			}
+			writeCtx, writeCancel := context.WithTimeout(wsCtx, 5*time.Second)
+			err := conn.Write(writeCtx, websocket.MessageText, msg)
+			writeCancel()
+			if err != nil {
+				slog.Debug("ws write failed", "err", err)
+				return
+			}
+		}
+	}
+}
+
+// clearServerDeadlines снимает дедлайны, которые net/http поставил по
+// WriteTimeout/ReadTimeout. Для hijacked-соединения (WebSocket) они не
+// сбрасываются автоматически (golang/go#32314) — без этого запись в сокет
+// отваливается через WriteTimeout, то есть долгая подписка жить не может.
+func clearServerDeadlines(w http.ResponseWriter) {
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Time{})
+	_ = rc.SetWriteDeadline(time.Time{})
+}
+
+// timeNow — подменяется в тестах.
+var timeNow = time.Now
