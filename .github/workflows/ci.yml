@@ -1,0 +1,190 @@
+name: CI — build & push
+
+# Только сборка и пуш артефактов. В кластер ничего не деплоим: ArgoCD
+# (Incept10n/inceptech, apps/coffeely) тянет мутабельные теги
+# `coffeely-backend:backend` и `coffeely-landing:front` с imagePullPolicy: Always.
+#
+# Требуемые секреты репозитория:
+#   DOCKER_USERNAME, DOCKER_PASSWORD  — Docker Hub (incept1on)
+#   S3_ACCESS_KEY, S3_SECRET_KEY      — S3 seaweedfs (https://s3.inceptech.ru)
+#
+# APK публикуется в бакет `coffeely`: стабильная ссылка /coffeely/coffeely.apk
+# (её использует лендинг) + версия с коротким sha в /coffeely/builds/.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  S3_ENDPOINT: https://s3.inceptech.ru
+  S3_BUCKET: coffeely
+  API_BASE_URL: https://coffeely.inceptech.ru/api
+
+jobs:
+  backend:
+    name: Backend — test, build, push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: coffeely
+          POSTGRES_PASSWORD: coffeely
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U coffeely"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: backend/go.sum
+
+      - name: go vet + тесты (e2e против сервиса postgres)
+        working-directory: backend
+        env:
+          DATABASE_URL: postgres://coffeely:coffeely@localhost:5432/coffeely?sslmode=disable
+        run: |
+          go vet ./...
+          go test ./... -count=1
+
+      - name: Log in to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@f4ef78c080cd8ba55a85445d5b36e214a81df20a
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build (и push на main)
+        uses: docker/build-push-action@3b5e8027fcad23fda98b2e3ac259d8d67585f671
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            incept1on/coffeely-backend:backend
+            incept1on/coffeely-backend:sha-${{ github.sha }}
+          provenance: false
+
+  landing:
+    name: Landing — build, push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@f4ef78c080cd8ba55a85445d5b36e214a81df20a
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build (и push на main)
+        uses: docker/build-push-action@3b5e8027fcad23fda98b2e3ac259d8d67585f671
+        with:
+          context: ./landing
+          file: ./landing/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            incept1on/coffeely-landing:front
+            incept1on/coffeely-landing:sha-${{ github.sha }}
+          provenance: false
+
+  apk:
+    name: APK — build, upload to S3
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-36 build-tools;36.0.0 platform-tools"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Сборка APK (прод-адрес API)
+        working-directory: mobile
+        run: |
+          ./gradlew :composeApp:assembleDebug \
+            -Pcoffeely.apiBaseUrl="${API_BASE_URL}" \
+            --no-daemon --stacktrace
+
+      - name: Подготовка артефакта
+        run: |
+          mkdir -p dist
+          SHORT_SHA="$(git rev-parse --short=12 HEAD)"
+          cp mobile/composeApp/build/outputs/apk/debug/composeApp-debug.apk "dist/coffeely-${SHORT_SHA}.apk"
+          cp mobile/composeApp/build/outputs/apk/debug/composeApp-debug.apk dist/coffeely.apk
+          ls -la dist
+
+      - name: Upload в S3
+        if: github.event_name != 'pull_request'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_EC2_METADATA_DISABLED: "true"
+        run: |
+          aws --endpoint-url "$S3_ENDPOINT" s3 mb "s3://$S3_BUCKET" || true
+
+          # Публичное чтение объектов бакета: APK качают гости с лендинга,
+          # без подписи и без ключей. Политика бакета — единственный способ
+          # открыть объекты в S3-режиме SeaweedFS.
+          cat > /tmp/bucket-policy.json <<'JSON'
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Sid": "PublicReadApk",
+                "Effect": "Allow",
+                "Principal": "*",
+                "Action": ["s3:GetObject"],
+                "Resource": ["arn:aws:s3:::coffeely/*"]
+              }
+            ]
+          }
+          JSON
+
+          aws --endpoint-url "$S3_ENDPOINT" s3api put-bucket-policy \
+            --bucket "$S3_BUCKET" --policy file:///tmp/bucket-policy.json \
+            || echo "::warning::put-bucket-policy не принят — проверь анонимное чтение бакета в SeaweedFS (s3 config / bucket policy)"
+
+          aws --endpoint-url "$S3_ENDPOINT" s3 cp dist/coffeely.apk \
+            "s3://$S3_BUCKET/coffeely.apk" \
+            --content-type application/vnd.android.package-archive \
+            --cache-control "no-cache"
+          aws --endpoint-url "$S3_ENDPOINT" s3 cp "dist/coffeely-$(git rev-parse --short=12 HEAD).apk" \
+            "s3://$S3_BUCKET/builds/coffeely-$(git rev-parse --short=12 HEAD).apk" \
+            --content-type application/vnd.android.package-archive
+
+          # Проверяем, что файл реально отдаётся анонимно (так его качает лендинг).
+          curl -fsS -o /dev/null -w "apk http %{http_code}, %{size_download} bytes\n" \
+            "$S3_ENDPOINT/$S3_BUCKET/coffeely.apk"

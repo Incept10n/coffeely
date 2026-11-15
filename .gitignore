@@ -3,6 +3,10 @@ backend/bin/
 *.test
 *.out
 
+# Landing (node)
+landing/node_modules/
+landing/dist/
+
 # KMP / Android
 mobile/.gradle/
 mobile/**/build/
