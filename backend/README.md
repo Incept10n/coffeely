@@ -39,7 +39,29 @@ go run ./cmd/migrate drop   # снести всё (только dev!)
 |---|---|---|
 | `PORT` | `8080` | порт HTTP-сервера |
 | `DATABASE_URL` | dev-DSN из `deploy/dev/.env.example` | строка подключения Postgres |
-| `ENV` | `dev` | dev / prod |
+| `ENV` | `dev` | dev / prod (в prod обязателен `JWT_SECRET`) |
+| `JWT_SECRET` | dev-дефолт | секрет HS256 access-токенов |
+| `ACCESS_TOKEN_TTL` | `15m` | срок жизни access-токена |
+| `REFRESH_TOKEN_TTL` | `720h` | срок жизни refresh-токена (30 дней) |
+| `YANDEX_CLIENT_ID` / `YANDEX_CLIENT_SECRET` | пусто | OAuth2 Yandex ID |
+| `YANDEX_REDIRECT_URL` | `http://localhost:8080/auth/yandex/callback` | callback OAuth |
+
+## API (веха M2)
+
+| Метод | Путь | Доступ | Что делает |
+|---|---|---|---|
+| POST | `/auth/register` | все | регистрация клиента (email+пароль, argon2id), выдаёт access+refresh |
+| POST | `/auth/login` | все | вход, выдаёт access+refresh |
+| POST | `/auth/refresh` | все | ротация refresh: старый отзывается, выдаётся новый; повторное использование отзывает всю сессию |
+| POST | `/auth/logout` | все | отзывает refresh-токен |
+| GET | `/auth/me` | Bearer | текущий пользователь (id, email, роль) |
+| GET | `/auth/yandex/start` | все | редирект на Yandex ID |
+| GET | `/auth/yandex/callback` | все | вход/регистрация по Yandex ID, связка по email |
+| POST | `/barista/claim-invite` | Bearer | одноразовый код → роль barista + привязка к точке |
+| POST | `/admin/invite-codes` | Bearer owner | выпуск кода приглашения для точки |
+
+E2E-тесты (`go test ./...`) гоняют все флоу против тестовой БД `coffeely_test`
+(пересоздаётся с нуля); Yandex ID — против mock-OIDC. Без доступного Postgres тесты скипаются.
 
 ## Сборка
 
@@ -55,7 +77,10 @@ cmd/server/       — точка входа
 cmd/migrate/      — запуск миграций (go run ./cmd/migrate up|down|drop)
 internal/config/  — конфигурация (env)
 internal/db/      — pgxpool, подключение к БД
-internal/auth/    — (M2) email+пароль (argon2), Yandex ID OAuth2/OIDC, JWT-сессии
+internal/server/  — сборка маршрутов + e2e-тесты
+internal/auth/    — (M2) argon2id, JWT access+refresh, Yandex ID, middleware ролей
+internal/barista/ — (M2) коды приглашений, привязка баристы к точке
+internal/httpx/   — JSON-помощники, API-ошибки
 internal/orders/  — (M3/M4) заказы, статусы, KDS-очередь
 internal/points/  — (M4) точки, меню
 internal/capacity/— (M4) движок слотов ёмкости (5-минутные окна)

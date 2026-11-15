@@ -1,6 +1,4 @@
 // Command server — точка входа API coffeely.
-// Минимальный HTTP-сервер с health-пробами и подключением к PostgreSQL.
-// HTTP-роутер (chi) и домены подключаются следующими вехами.
 package main
 
 import (
@@ -15,6 +13,7 @@ import (
 
 	"github.com/Incept10n/coffeely/backend/internal/config"
 	"github.com/Incept10n/coffeely/backend/internal/db"
+	"github.com/Incept10n/coffeely/backend/internal/server"
 )
 
 func main() {
@@ -36,29 +35,9 @@ func main() {
 	}
 	logger.Info("db connected")
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok","service":"coffeely-backend"}`))
-	})
-	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
-		pingCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-		defer cancel()
-
-		w.Header().Set("Content-Type", "application/json")
-		if err := pool.Ping(pingCtx); err != nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte(`{"status":"unready","db":false}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"status":"ready","db":true}`))
-	})
-
-	addr := ":" + cfg.Port
 	srv := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
+		Addr:              ":" + cfg.Port,
+		Handler:           server.New(pool, cfg),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -66,7 +45,7 @@ func main() {
 	}
 
 	go func() {
-		logger.Info("server starting", "addr", addr, "env", cfg.Env)
+		logger.Info("server starting", "addr", srv.Addr, "env", cfg.Env)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("listen failed", "err", err)
 			os.Exit(1)
