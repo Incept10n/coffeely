@@ -93,7 +93,7 @@ Hub — подписки на точку, `GET /ws/points/{id}`). Создани
 («оплата в кассе при получении»), проверка ёмкости окна — M4. Сквозные номера
 заказов — миграция 000003 (`order_number`).
 
-## M4 — Клиентский флоу (ЗАКРЫТА 2026-11-15)
+## M4 — Клиентский флоу (ЗАКРЫТА 2026-11-15; v2 переработал выбор окон — см. M8)
 
 1. Список точек (geo), меню точки, окна выдачи на сегодня со свободной ёмкостью
    (движок v1: лимит заказов на 5-минутное окно из `capacity_config`).
@@ -118,25 +118,67 @@ Ktor-клиент против dev-бэкенда, логин-экраны.
 
 Статус: apk собирается (`assembleDebug`), клиентский и бариста-флоу работают против
 реального API (вход/регистрация, точки, меню, окна с ёмкостью, заказ с точным
-временем готовности, KDS-очередь со сменой статусов). Поллинг каждые 5 с;
-переход на WebSocket-пуш — следующий шаг. Требует проверки на устройстве/эмуляторе
-(сейчас не подключено). JDK 17+ и Android SDK — установлены (SDK в `/opt/android-sdk`).
+временем готовности, KDS-очередь со сменой статусов). Проверено на эмуляторе
+(android-36, `my_avd`) против dev-бэкенда. Для сборки нужен JDK 21 (AGP 8.13 не
+собирает на JDK 27) и Android SDK в `/opt/android-sdk`; клиентский флоу переработан
+в M8 (без выбора окон, «мои заказы», realtime-статусы).
 
 ## M6 — Оплата онлайн (ЮKassa / CloudPayments)
 
 После юрлица. Вебхук, идемпотентность, статусы `paid`/`cancelled`.
 
-## M7 — Пилот на 2–3 точках (ДЕПЛОЙ-АРТЕФАКТЫ ГОТОВЫ, ЖДУТ VPS)
+## M7 — Пилот на 2–3 точках (ДЕПЛОЙ-АРТЕФАКТЫ ГОТОВЫ)
 
-Deploy на VPS РФ (docker compose, Caddy TLS, бэкапы Postgres, алерты).
+Прод — Kubernetes пользователя: ArgoCD (Incept10n/inceptech, `apps/coffeely`),
+образы из CI этого репозитория, TLS через nginx-LB + cert-manager.
+Compose-стек `deploy/` (db + backend + Caddy) остаётся запасным путём для VPS.
 Замер порогов AIK-14 §6 на живых данных. До M7 — полевая проверка без кода
 (план: AIK-11 §7), её делает пользователь.
 
-Статус: `backend/Dockerfile` (статический бинарник, non-root), `deploy/docker-compose.prod.yml`
-(db + one-shot migrate + backend + Caddy), `deploy/Caddyfile` (TLS + WebSocket),
-`deploy/backup.sh` (pg_dump, проверка целостности, ротация 14 дней), `.env.prod.example`.
-Образ собран и проверен локально: стартует, подключается к БД, `readyz` отвечает.
-Осталось: VPS + домен + DNS, cron бэкапов, алерты (мониторинг `/readyz`).
+Статус: `backend/Dockerfile` (статический бинарник, non-root), `deploy/docker-compose.prod.yml`,
+`deploy/Caddyfile` (TLS + WebSocket), `deploy/backup.sh` (pg_dump, ротация 14 дней),
+`.env.prod.example`. Образ проверен локально: стартует, подключается к БД, `readyz` отвечает,
+`/app/migrate up` идемпотентен (initContainer). K8s-манифесты — `apps/coffeely` в inceptech.
+Осталось: секрет OpenBao, DNS, cron бэкапов Postgres в кластере, алерты (мониторинг `/readyz`).
+
+## M8 — Клиентский флоу v2, прод-деплой, лендинг (2026-11-15)
+
+**Запрос пользователя:** «нет кнопки „мои заказы“; клиент должен видеть, что заказ
+взяли в работу и ко скольки он будет готов. Люди не должны выбирать окошки — нажав
+на кофейню, человек видит примерное время готовки и обновление статусов».
+
+Сделано:
+
+1. **Отказ от выбора окон.** `POST /orders` принимает только `{point_id, items}`.
+   Окно назначает движок `points.PlanSlot`: готовность = сейчас + очередь точки +
+   prep заказа, округлённая вверх по сетке окон; берётся первое окно со свободной
+   ёмкостью, но не раньше готовности (бариста получает полный prep до начала окна).
+   `deadline_at = начало окна − prep`. Дальше 120 минут от «сейчас» — `409 point_busy`.
+   `GET /points/{id}/windows` удалён: клиент окошек не видит.
+2. **Загрузка точки в списке.** `GET /points` отдаёт `load`: `wait_seconds` (сумма prep
+   активных заказов), `active_orders`, `is_open`, `opens_at`. Экран кофейни показывает
+   «свободно» / «сейчас в очереди 2 — ваш кофе примерно через 5 мин».
+3. **«Мои заказы».** `GET /orders` — активные сверху, затем история; в карточке
+   название точки, статус, время готовности, сумма. Статус заказа обновляется
+   realtime: `GET /ws/orders` (канал пользователя) + страховочный поллинг.
+4. **Сессия сохраняется** на устройстве (SharedPreferences + refresh): при повторном
+   запуске гость сразу видит свои заказы.
+5. **Логирование запросов** в stdout: middleware `httpx.LogRequests` — method, path,
+   status, bytes, duration_ms, remote, user_agent, request_id; 4xx=WARN, 5xx=ERROR.
+6. **Лендинг** `landing/` (Vite + React → nginx) на `coffeely.inceptech.ru` с раздачей
+   APK из S3 (`s3.inceptech.ru/coffeely/coffeely.apk`).
+7. **CI** `.github/workflows/ci.yml`: тесты бэкенда против Postgres-сервиса, Docker-образы
+   `coffeely-backend:backend` и `coffeely-landing:front` в Docker Hub, сборка APK
+   (прод-адрес API) и выкладка в S3. ArgoCD (Incept10n/inceptech, `apps/coffeely`)
+   тянет мутабельные теги с `imagePullPolicy: Always`.
+8. **Прод-манифесты**: namespace, Postgres (statefulset + PVC), миграции в initContainer
+   (`migrate up` теперь идемпотентен — `ErrNoChange` = успех), секреты из OpenBao
+   (`secret/coffeely`), nginx-LB: сертификат на `coffeely.inceptech.ru`, API и WebSocket
+   под `/api` (префикс срезается), апгрейд для `/api/ws/*`.
+
+Приёмка: e2e-тесты (`TestClientFlowE2E`, `TestWindowCapacityE2E`, M3-набор) зелёные;
+apk проверен на эмуляторе — список точек с ожиданием, заказ без окон, точное время,
+live-смена статуса баристой, «мои заказы», сохранение сессии после перезапуска.
 
 ## После пилота
 
@@ -155,3 +197,4 @@ Deploy на VPS РФ (docker compose, Caddy TLS, бэкапы Postgres, алер
 - 2026-11-15 — M5 закрыта: apk собирается, мобильные флоу клиента и баристы работают против реального API, KDS realtime по WebSocket.
 - 2026-11-15 — подготовлены артефакты M7: prod Dockerfile, compose (db + migrate + backend + Caddy), Caddyfile, backup.sh. Образ проверен локально.
 - 2026-11-15 — cmd/seed (бутстрап точки/меню/владельца) + unit-тесты capacity/urgency; живой e2e-прогон всей цепочки owner→invite→бариста→клиент→заказ→KDS→статус.
+- 2026-11-15 — M8: клиентский флоу v2 (окно назначает точка, загрузка в списке, «мои заказы», realtime-статусы, сохранение сессии), логирование всех запросов в stdout, лендинг с APK, CI (Docker Hub + S3), прод-манифесты ArgoCD и nginx-LB.

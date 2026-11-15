@@ -9,7 +9,9 @@
 Состав продукта:
 - `backend/` — Go-бэкенд (chi/echo, PostgreSQL, миграции golang-migrate; realtime — Centrifugo или WebSocket).
 - `mobile/` — приложение клиента и бариста (Kotlin Multiplatform + Compose Multiplatform; Android первым, iOS в течение полугода).
-- `deploy/` — Docker Compose, VPS РФ, Caddy, TLS.
+- `landing/` — лендинг (Vite + React → nginx) на https://coffeely.inceptech.ru, раздаёт APK из S3.
+- `deploy/` — Docker Compose, VPS РФ, Caddy, TLS (запасной путь; прод — Kubernetes).
+- `.github/workflows/ci.yml` — тесты, Docker-образы в Docker Hub, сборка APK в S3.
 - CRM для владельцев кофейен и сайт — **отдельный репозиторий** (`devops/coffeely-crm`), тот же API. Здесь его не делать.
 
 ## База знаний бизнеса — YouGile `ai-knowlege` (MCP)
@@ -39,7 +41,10 @@
 ## Окружение этой машины
 
 - Arch Linux x86_64, юзер `incept1on` (группы `wheel`, `docker`).
-- Go 1.27 (`/usr/bin/go`). JDK 27 установлен (`/usr/lib/jvm/java-27-openjdk`).
+- Go 1.27 (`/usr/bin/go`). JDK 27 установлен (`/usr/lib/jvm/java-27-openjdk`), но
+  **AGP 8.13 на нём не собирает apk** (падает `jlink` в JdkImageTransform): для
+  `mobile/` нужен JDK 21 — он лежит в `~/.jdks/jdk-21.0.13+9`, путь прописан в
+  `~/.gradle/gradle.properties` (`org.gradle.java.home`).
   Android SDK **установлен** в `/opt/android-sdk` (platform 36, build-tools 36, platform-tools, emulator).
   AVD для тестов: `my_avd` (system-image android-36 google_apis x86_64). Запуск без окна:
   `emulator -avd my_avd -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect`
@@ -49,6 +54,21 @@
   (`permission denied ... /var/run/docker.sock`), обернуть команду в `newgrp docker <<<'<cmd>'` —
   это артефакт старой сессии, в новой сессии docker работает напрямую.
 - Postgres в dev — через `deploy/dev/docker-compose.yml` (создать в рамках M1, см. план).
+
+## Прод и CI
+
+- CI (`.github/workflows/ci.yml`) только собирает и пушит: Docker-образы
+  `incept1on/coffeely-backend:backend`, `incept1on/coffeely-landing:front` в Docker Hub
+  и APK в S3 (`https://s3.inceptech.ru/coffeely/coffeely.apk`). Секреты репозитория:
+  `DOCKER_USERNAME`, `DOCKER_PASSWORD`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`.
+- В кластер ничего не деплоим из этого репо. ArgoCD (репозиторий `Incept10n/inceptech`,
+  `apps/coffeely`) тянет мутабельные теги с `imagePullPolicy: Always`; после нового
+  образа нужен `kubectl rollout restart deployment/backend -n coffeely`.
+- Секреты прода — OpenBao `secret/coffeely` (`password`, `jwt_secret`) → ExternalSecret
+  собирает `DATABASE_URL`, `POSTGRES_PASSWORD`, `JWT_SECRET` в `coffeely-secrets`.
+- Домен: `coffeely.inceptech.ru` — лендинг на `/`, API и WebSocket на `/api`
+  (nginx срезает префикс перед проксированием в backend);
+  TLS — cert-manager, конфиг nginx-LB в репозитории `nginx-inceptech-loadblalancer`.
 
 ## Запуск backend (dev)
 
