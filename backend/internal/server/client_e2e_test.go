@@ -28,8 +28,11 @@ func seedClientFlow(t *testing.T, e *testEnv) (pointTight, pointDefault, menuID 
 	).Scan(&pointTight); err != nil {
 		t.Fatalf("seed tight point: %v", err)
 	}
+	cfgDefault, _ := json.Marshal(map[string]any{
+		"work_start": "00:00", "work_end": "24:00", // тесты не зависят от времени прогона
+	})
 	if err := e.pool.QueryRow(ctx,
-		`INSERT INTO points (title, capacity_config) VALUES ('Дефолтная точка', '{}') RETURNING id`,
+		`INSERT INTO points (title, capacity_config) VALUES ('Дефолтная точка', $1) RETURNING id`, cfgDefault,
 	).Scan(&pointDefault); err != nil {
 		t.Fatalf("seed default point: %v", err)
 	}
@@ -230,6 +233,51 @@ func TestWindowCapacityE2E(t *testing.T) {
 	}
 	if !slots[3].After(slots[2]) {
 		t.Fatalf("четвёртый заказ должен уехать в следующее окно: %v", slots)
+	}
+}
+
+// Закрытая точка: ближайшее открытие дальше maxLead → 409 point_busy.
+func TestClosedPointE2E(t *testing.T) {
+	e := newTestEnv(t)
+	e.srv = httptest.NewServer(e.handler)
+	t.Cleanup(e.srv.Close)
+
+	moscow, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		t.Fatalf("tz: %v", err)
+	}
+	// Рабочие часы начинаются через 6 часов: сейчас точка закрыта, а «через 6
+	// часов» — дальше maxLead (2 часа), значит вместо заказа будет отказ.
+	now := time.Now().In(moscow)
+	start := now.Add(6 * time.Hour)
+	cfg, _ := json.Marshal(map[string]any{
+		"window_minutes": 5, "max_orders_per_window": 3,
+		"work_start": start.Format("15:04"),
+		"work_end":   start.Add(time.Hour).Format("15:04"),
+	})
+	var pointID, menuID string
+	if err := e.pool.QueryRow(context.Background(),
+		`INSERT INTO points (title, capacity_config) VALUES ('Закрытая точка', $1) RETURNING id`, cfg,
+	).Scan(&pointID); err != nil {
+		t.Fatalf("seed closed point: %v", err)
+	}
+	if err := e.pool.QueryRow(context.Background(),
+		`INSERT INTO menu_items (point_id, title, price_minor, prep_seconds) VALUES ($1, 'Эспрессо', 15000, 120) RETURNING id`,
+		pointID,
+	).Scan(&menuID); err != nil {
+		t.Fatalf("seed menu: %v", err)
+	}
+
+	client := registerClient(t, e)
+	status, resp := e.doJSON(t, "POST", "/orders", client, map[string]any{
+		"point_id": pointID,
+		"items":    []map[string]any{{"menu_item_id": menuID, "qty": 1}},
+	})
+	if status != http.StatusConflict {
+		t.Fatalf("закрытая точка: ждём 409, получили %d: %v", status, resp)
+	}
+	if code, _ := resp["code"].(string); code != "point_busy" {
+		t.Fatalf("код ошибки: %v", resp["code"])
 	}
 }
 

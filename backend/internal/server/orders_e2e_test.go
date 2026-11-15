@@ -21,8 +21,12 @@ func seedKDS(t *testing.T, e *testEnv) (pointID, menuA, menuB, baristaAccess, cl
 	t.Helper()
 	ctx := context.Background()
 
+	// Круглосуточная точка: иначе тесты зависят от времени прогона
+	// (вне рабочих часов движок ёмкости переносит окно на следующее открытие).
 	if err := e.pool.QueryRow(ctx,
-		`INSERT INTO points (title, address) VALUES ('Точка KDS', 'ул. КДС 1') RETURNING id`,
+		`INSERT INTO points (title, address, capacity_config)
+		 VALUES ('Точка KDS', 'ул. КДС 1', '{"work_start":"00:00","work_end":"24:00"}')
+		 RETURNING id`,
 	).Scan(&pointID); err != nil {
 		t.Fatalf("seed point: %v", err)
 	}
