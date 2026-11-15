@@ -31,8 +31,8 @@ import com.coffeely.mobile.api.TokenStore
 import com.coffeely.mobile.api.UserDto
 import kotlinx.coroutines.launch
 
-// Вход/регистрация через реальный API бэкенда (M2): email+пароль, argon2id,
-// access+refresh. Refresh-хранение и Yandex ID подключим следующими шагами.
+// Вход/регистрация через реальный API бэкенда (M2): email+пароль, argon2id.
+// Сессия сохраняется на устройстве (TokenStore), Yandex ID — следующий шаг.
 @Composable
 fun LoginScreen(api: ApiClient, onLoggedIn: (UserDto) -> Unit) {
     var email by remember { mutableStateOf("") }
@@ -48,7 +48,7 @@ fun LoginScreen(api: ApiClient, onLoggedIn: (UserDto) -> Unit) {
             val result = if (register) api.register(email.trim(), password) else api.login(email.trim(), password)
             result.fold(
                 { resp ->
-                    TokenStore.access = resp.tokens.access_token
+                    TokenStore.set(resp.tokens.access_token, resp.tokens.refresh_token)
                     onLoggedIn(resp.user)
                 },
                 { error = it.message ?: "ошибка сети" },

@@ -46,6 +46,16 @@ android {
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = 1
         versionName = "0.1.0"
+
+        // Адрес API на сборке: CI передаёт прод, локально — эмулятор (10.0.2.2).
+        val apiBaseUrl = providers.gradleProperty("coffeely.apiBaseUrl")
+            .orElse("http://10.0.2.2:8080")
+            .get()
+        buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     compileOptions {

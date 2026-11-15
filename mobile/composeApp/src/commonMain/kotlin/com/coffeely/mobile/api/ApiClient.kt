@@ -19,11 +19,11 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.json.Json
 
-// dev: эмулятор Android видит host-машину как 10.0.2.2.
-// На реальном устройстве замени на IP компьютера в той же Wi-Fi-сети.
-const val DEFAULT_BASE_URL = "http://10.0.2.2:8080"
+// Адрес API приходит из сборки (BuildConfig.API_BASE_URL): в CI — прод,
+// локально — эмулятор (10.0.2.2 виден как хост-машина).
+internal expect fun platformApiBaseUrl(): String
 
-class ApiClient(baseUrl: String = DEFAULT_BASE_URL) {
+class ApiClient(baseUrl: String = platformApiBaseUrl()) {
     private val base = baseUrl.trimEnd('/')
 
     // http://host:8080 → ws://host:8080; https:// → wss://
@@ -56,6 +56,8 @@ class ApiClient(baseUrl: String = DEFAULT_BASE_URL) {
         postJson("/auth/refresh", RefreshRequest(refreshToken))
     }
 
+    suspend fun me(): Result<UserDto> = runCatching { getJson("/auth/me") }
+
     suspend fun logout(refreshToken: String): Result<Unit> = runCatching {
         val resp = client.post("$base/auth/logout") {
             contentType(ContentType.Application.Json)
@@ -72,22 +74,13 @@ class ApiClient(baseUrl: String = DEFAULT_BASE_URL) {
     suspend fun menu(pointId: String): Result<MenuResponse> =
         runCatching { getJson("/points/$pointId/menu") }
 
-    suspend fun windows(pointId: String): Result<WindowsResponse> =
-        runCatching { getJson("/points/$pointId/windows") }
-
-    suspend fun createOrder(
-        pointId: String,
-        slotStart: String,
-        slotEnd: String,
-        items: List<OrderItemRef>,
-    ): Result<OrderDto> = runCatching {
-        postJson(
-            "/orders",
-            CreateOrderRequest(pointId, slotStart, slotEnd, items),
-        )
-    }
+    // Окно производства не передаётся: его назначает точка по текущей очереди.
+    suspend fun createOrder(pointId: String, items: List<OrderItemRef>): Result<OrderDto> =
+        runCatching { postJson("/orders", CreateOrderRequest(pointId, items)) }
 
     suspend fun order(id: String): Result<OrderDto> = runCatching { getJson("/orders/$id") }
+
+    suspend fun myOrders(): Result<OrdersResponse> = runCatching { getJson("/orders") }
 
     // --- бариста (KDS) ---
 
@@ -98,6 +91,25 @@ class ApiClient(baseUrl: String = DEFAULT_BASE_URL) {
     fun pointEvents(pointId: String): Flow<WsEvent> = flow {
         client.webSocket(
             urlString = wsBase + "/ws/points/" + pointId,
+            request = {
+                TokenStore.access?.let { header("Authorization", "Bearer $it") }
+            },
+        ) {
+            for (frame in incoming) {
+                if (frame is Frame.Text) {
+                    val event = runCatching {
+                        json.decodeFromString<WsEvent>(frame.readText())
+                    }.getOrNull()
+                    if (event != null) emit(event)
+                }
+            }
+        }
+    }
+
+    // Realtime-канал клиента: статусы его заказов.
+    fun myEvents(): Flow<WsEvent> = flow {
+        client.webSocket(
+            urlString = wsBase + "/ws/orders",
             request = {
                 TokenStore.access?.let { header("Authorization", "Bearer $it") }
             },
