@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- dev: бэкенд по HTTP (10.0.2.2 для эмулятора, IP компа для устройства).
+     TODO: перед релизом убрать cleartext, прод работает по HTTPS. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

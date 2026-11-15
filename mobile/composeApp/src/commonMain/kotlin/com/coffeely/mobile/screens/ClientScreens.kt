@@ -221,7 +221,7 @@ private fun OrderStatusCard(order: OrderDto, api: ApiClient, onBackToPoints: () 
             delay(5000)
         }
     }
-    Column(modifier = Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(modifier = modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Spacer(Modifier.height(48.dp))
         Text("Заказ №${current.number}", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(8.dp))
