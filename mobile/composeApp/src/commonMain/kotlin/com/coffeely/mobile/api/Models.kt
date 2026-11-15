@@ -79,6 +79,10 @@ data class QueueEntryDto(
 @Serializable
 data class QueueResponse(val point_id: String, val orders: List<QueueEntryDto> = emptyList())
 
+// Событие realtime-канала точки: {"type":"order_created"|"order_status","order":{...}}
+@Serializable
+data class WsEvent(val type: String, val order: OrderDto? = null)
+
 @Serializable
 data class ErrorResponse(val code: String = "", val message: String = "")
 

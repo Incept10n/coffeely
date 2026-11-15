@@ -3,6 +3,8 @@ package com.coffeely.mobile.api
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.plugins.websocket.WebSockets
+import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -11,6 +13,10 @@ import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
+import io.ktor.websocket.Frame
+import io.ktor.websocket.readText
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.json.Json
 
 // dev: эмулятор Android видит host-машину как 10.0.2.2.
@@ -20,12 +26,20 @@ const val DEFAULT_BASE_URL = "http://10.0.2.2:8080"
 class ApiClient(baseUrl: String = DEFAULT_BASE_URL) {
     private val base = baseUrl.trimEnd('/')
 
+    // http://host:8080 → ws://host:8080; https:// → wss://
+    private val wsBase = when {
+        base.startsWith("https://") -> "wss://" + base.removePrefix("https://")
+        base.startsWith("http://") -> "ws://" + base.removePrefix("http://")
+        else -> base
+    }
+
     private val json = Json { ignoreUnknownKeys = true }
 
     private val client = HttpClient {
         install(ContentNegotiation) {
             json(this@ApiClient.json)
         }
+        install(WebSockets)
     }
 
     // --- аутентификация ---
@@ -78,6 +92,26 @@ class ApiClient(baseUrl: String = DEFAULT_BASE_URL) {
     // --- бариста (KDS) ---
 
     suspend fun queue(): Result<QueueResponse> = runCatching { getJson("/barista/queue") }
+
+    // Realtime-канал точки (WebSocket): новые заказы и смены статусов без поллинга.
+    // Поток завершается при обрыве; вызывающий переподключается.
+    fun pointEvents(pointId: String): Flow<WsEvent> = flow {
+        client.webSocket(
+            urlString = wsBase + "/ws/points/" + pointId,
+            request = {
+                TokenStore.access?.let { header("Authorization", "Bearer $it") }
+            },
+        ) {
+            for (frame in incoming) {
+                if (frame is Frame.Text) {
+                    val event = runCatching {
+                        json.decodeFromString<WsEvent>(frame.readText())
+                    }.getOrNull()
+                    if (event != null) emit(event)
+                }
+            }
+        }
+    }
 
     suspend fun setStatus(orderId: String, status: String): Result<OrderDto> = runCatching {
         postJson("/barista/orders/$orderId/status", StatusRequest(status))

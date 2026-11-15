@@ -43,17 +43,33 @@ import kotlinx.coroutines.launch
 @Composable
 fun BaristaScreen(api: ApiClient, onLogout: () -> Unit) {
     var orders by remember { mutableStateOf<List<QueueEntryDto>>(emptyList()) }
+    var pointId by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
     suspend fun refresh() {
-        api.queue().fold({ orders = it.orders; error = null }, { error = it.message })
+        api.queue().fold(
+            { orders = it.orders; pointId = it.point_id; error = null },
+            { error = it.message },
+        )
     }
 
+    // Realtime: подписка на канал точки; при обрыве — переподключение через 2 с.
+    // Поллинг оставлен только как страховка (раз в 30 тиков ~ без нагрузки).
     LaunchedEffect(Unit) {
         while (true) {
             refresh()
-            delay(5000)
+            val pid = pointId
+            if (pid == null) {
+                delay(5000)
+                continue
+            }
+            runCatching {
+                api.pointEvents(pid).collect {
+                    refresh()
+                }
+            }
+            delay(2000)
         }
     }
 
