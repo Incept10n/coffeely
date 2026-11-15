@@ -39,7 +39,8 @@
 ## Окружение этой машины
 
 - Arch Linux x86_64, юзер `incept1on` (группы `wheel`, `docker`).
-- Go 1.27 (`/usr/bin/go`). Java/Android SDK **не установлены** — нужны для `mobile/` позже.
+- Go 1.27 (`/usr/bin/go`). JDK 27 установлен (`/usr/lib/jvm/java-27-openjdk`).
+  Android SDK **не установлен** — нужен для сборки `mobile/` (команды в `mobile/README.md`).
 - Docker установлен пользователем. Если в сессии `docker` недоступен по правам
   (`permission denied ... /var/run/docker.sock`), обернуть команду в `newgrp docker <<<'<cmd>'` —
   это артефакт старой сессии, в новой сессии docker работает напрямую.
