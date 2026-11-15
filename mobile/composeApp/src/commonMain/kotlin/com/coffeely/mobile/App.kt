@@ -5,26 +5,30 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import com.coffeely.mobile.api.ApiClient
+import com.coffeely.mobile.api.TokenStore
+import com.coffeely.mobile.api.UserDto
 import com.coffeely.mobile.screens.BaristaScreen
-import com.coffeely.mobile.screens.ClientScreen
+import com.coffeely.mobile.screens.ClientFlow
 import com.coffeely.mobile.screens.LoginScreen
 import com.coffeely.mobile.ui.CoffeelyTheme
 
-// Роли из схемы БД (backend/migrations): client / barista (+ owner под CRM, в мобилке его нет).
-enum class Role { Client, Barista }
-
 @Composable
 fun App() {
-    var role by remember { mutableStateOf<Role?>(null) }
+    var user by remember { mutableStateOf<UserDto?>(null) }
+    val api = remember { ApiClient() }
+
+    fun logout() {
+        TokenStore.clear()
+        user = null
+    }
 
     CoffeelyTheme {
-        when (val current = role) {
-            null -> LoginScreen(
-                onEnterAsClient = { role = Role.Client },
-                onEnterAsBarista = { role = Role.Barista },
-            )
-            Role.Client -> ClientScreen(onLogout = { role = null })
-            Role.Barista -> BaristaScreen(onLogout = { role = null })
+        val current = user
+        when {
+            current == null -> LoginScreen(api) { user = it }
+            current.role == "barista" -> BaristaScreen(api, onLogout = ::logout)
+            else -> ClientFlow(api, onLogout = ::logout)
         }
     }
 }
