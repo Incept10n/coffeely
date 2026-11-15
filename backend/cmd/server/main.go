@@ -1,5 +1,5 @@
 // Command server — точка входа API coffeely.
-// Пока: минимальный HTTP-сервер с health-пробами на стандартной библиотеке.
+// Минимальный HTTP-сервер с health-пробами и подключением к PostgreSQL.
 // HTTP-роутер (chi) и домены подключаются следующими вехами.
 package main
 
@@ -12,11 +12,29 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/Incept10n/coffeely/backend/internal/config"
+	"github.com/Incept10n/coffeely/backend/internal/db"
 )
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
+
+	ctx := context.Background()
+
+	cfg, err := config.Load()
+	if err != nil {
+		logger.Error("config", "err", err)
+		os.Exit(1)
+	}
+
+	pool, err := db.Connect(ctx, cfg.DatabaseURL)
+	if err != nil {
+		logger.Error("db connect", "err", err)
+		os.Exit(1)
+	}
+	logger.Info("db connected")
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -25,12 +43,19 @@ func main() {
 		_, _ = w.Write([]byte(`{"status":"ok","service":"coffeely-backend"}`))
 	})
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
-		// Пока сервер только поднялся; с появлением БД здесь будет проверка миграций.
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ready"}`))
+		pingCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := pool.Ping(pingCtx); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"unready","db":false}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"ready","db":true}`))
 	})
 
-	addr := ":" + envOr("PORT", "8080")
+	addr := ":" + cfg.Port
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           mux,
@@ -41,7 +66,7 @@ func main() {
 	}
 
 	go func() {
-		logger.Info("server starting", "addr", addr)
+		logger.Info("server starting", "addr", addr, "env", cfg.Env)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("listen failed", "err", err)
 			os.Exit(1)
@@ -53,16 +78,11 @@ func main() {
 	<-stop
 
 	logger.Info("shutting down")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown failed", "err", err)
 	}
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
+	pool.Close()
+	logger.Info("bye")
 }

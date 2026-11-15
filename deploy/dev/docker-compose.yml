@@ -1,0 +1,25 @@
+# Dev-окружение coffeely: только Postgres.
+# Поднимается из корня репо: make -C backend dev-up
+# Переменные — см. .env.example (реальный .env в .gitignore).
+
+services:
+  db:
+    image: postgres:17
+    container_name: coffeely-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-coffeely}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-coffeely}
+      POSTGRES_DB: ${POSTGRES_DB:-coffeely}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - coffeely-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-coffeely} -d ${POSTGRES_DB:-coffeely}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  coffeely-pgdata:
