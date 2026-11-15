@@ -1,0 +1,24 @@
+# Go
+backend/bin/
+*.test
+*.out
+
+# KMP / Android
+mobile/.gradle/
+mobile/build/
+mobile/local.properties
+mobile/.idea/
+mobile/*.iml
+mobile/.kotlin/
+
+# Environment / secrets
+.env
+.env.*
+*.pem
+*.key
+secrets/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
