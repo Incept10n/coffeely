@@ -126,11 +126,17 @@ Ktor-клиент против dev-бэкенда, логин-экраны.
 
 После юрлица. Вебхук, идемпотентность, статусы `paid`/`cancelled`.
 
-## M7 — Пилот на 2–3 точках
+## M7 — Пилот на 2–3 точках (ДЕПЛОЙ-АРТЕФАКТЫ ГОТОВЫ, ЖДУТ VPS)
 
 Deploy на VPS РФ (docker compose, Caddy TLS, бэкапы Postgres, алерты).
 Замер порогов AIK-14 §6 на живых данных. До M7 — полевая проверка без кода
 (план: AIK-11 §7), её делает пользователь.
+
+Статус: `backend/Dockerfile` (статический бинарник, non-root), `deploy/docker-compose.prod.yml`
+(db + one-shot migrate + backend + Caddy), `deploy/Caddyfile` (TLS + WebSocket),
+`deploy/backup.sh` (pg_dump, проверка целостности, ротация 14 дней), `.env.prod.example`.
+Образ собран и проверен локально: стартует, подключается к БД, `readyz` отвечает.
+Осталось: VPS + домен + DNS, cron бэкапов, алерты (мониторинг `/readyz`).
 
 ## После пилота
 

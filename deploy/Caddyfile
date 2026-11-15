@@ -1,0 +1,20 @@
+# Caddy: TLS автоматически (Let's Encrypt), проксирование API и WebSocket на backend.
+# Домен берётся из переменной DOMAIN (deploy/.env.prod).
+{$DOMAIN} {
+	encode zstd gzip
+
+	# WebSocket (/ws/points/{id}) и обычные запросы — один upstream.
+	reverse_proxy backend:8080
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}
