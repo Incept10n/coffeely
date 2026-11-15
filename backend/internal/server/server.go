@@ -11,6 +11,7 @@ import (
 	"github.com/Incept10n/coffeely/backend/internal/auth"
 	"github.com/Incept10n/coffeely/backend/internal/barista"
 	"github.com/Incept10n/coffeely/backend/internal/config"
+	"github.com/Incept10n/coffeely/backend/internal/orders"
 )
 
 // New собираает mux со всеми маршрутами.
@@ -55,6 +56,16 @@ func New(pool *pgxpool.Pool, cfg config.Config) http.Handler {
 	// Бариста: коды приглашений и привязка к точке (веха M2)
 	baristaHandlers := barista.NewHandlers(barista.NewStore(pool))
 	baristaHandlers.RegisterRoutes(mux, authenticate)
+
+	// Заказы, KDS-очередь, realtime (веха M3)
+	ordersHub := orders.NewHub()
+	ordersHandlers := orders.NewHandlers(orders.NewStore(pool), ordersHub)
+	mux.Handle("POST /orders", authenticate(http.HandlerFunc(ordersHandlers.Create)))
+	mux.Handle("GET /orders/{id}", authenticate(http.HandlerFunc(ordersHandlers.ByID)))
+	mux.Handle("GET /barista/queue", authenticate(http.HandlerFunc(ordersHandlers.Queue)))
+	mux.Handle("POST /barista/orders/{id}/status", authenticate(http.HandlerFunc(ordersHandlers.SetStatus)))
+	mux.Handle("GET /barista/metrics", authenticate(http.HandlerFunc(ordersHandlers.Metrics)))
+	mux.Handle("GET /ws/points/{id}", authenticate(http.HandlerFunc(ordersHandlers.PointWS)))
 
 	return mux
 }
