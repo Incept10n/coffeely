@@ -50,6 +50,92 @@ cd mobile
 Релизная сборка: `./gradlew :composeApp:assembleRelease` (нужен keystore; `*.keystore`
 в `.gitignore`, в репо не попадает).
 
+## Быстрый старт на эмуляторе (пошагово)
+
+### 1. Поднять бэкенд на хосте
+
+```sh
+cd backend
+make dev-up       # Postgres в docker (если ещё не запущен)
+make run          # сервер на :8080
+```
+
+Эмулятор видит хост-машину как `10.0.2.2`, поэтому в приложении уже прописан
+`http://10.0.2.2:8080` — менять ничего не нужно.
+
+### 2. Собрать apk
+
+```sh
+cd mobile
+./gradlew :composeApp:assembleDebug
+```
+
+Файл появится здесь:
+
+```
+mobile/composeApp/build/outputs/apk/debug/composeApp-debug.apk
+```
+
+(около 11 МБ; `build/` в `.gitignore`, в репо apk не попадает)
+
+### 3. Запустить эмулятор
+
+Обычный запуск с окном:
+
+```sh
+source ~/.bashrc            # чтобы PATH видел emulator/adb
+emulator -avd my_avd
+```
+
+Если падает/тормозит из-за GPU или Wayland (а у тебя software rendering) —
+запуск без окна, всё управление через adb:
+
+```sh
+emulator -avd my_avd -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect
+```
+
+Дождаться загрузки:
+
+```sh
+adb wait-for-device
+adb shell getprop sys.boot_completed   # должно вернуть 1
+```
+
+### 4. Установить и открыть приложение
+
+```sh
+cd mobile
+adb install -r composeApp/build/outputs/apk/debug/composeApp-debug.apk
+adb shell am start -n com.coffeely.mobile/.MainActivity
+```
+
+Либо вручную: на главном экране эмулятора найти иконку **coffeely** и тапнуть.
+
+### 5. Тестовые аккаунты (dev-база уже засеяна)
+
+| Роль | Email | Пароль |
+|---|---|---|
+| клиент | `client@dev.coffeely` | `devpassword1` |
+| бариста | `barista@dev.coffeely` | `devpassword1` |
+| владелец (CRM) | `owner@dev.coffeely` | `devpassword1` |
+
+Пересоздать/добавить точку с меню: `go run ./cmd/seed ...` (см. `backend/README.md`).
+
+### Полезное для управления эмулятором без окна
+
+```sh
+adb exec-out screencap -p > screen.png      # скриншот
+adb shell input tap 540 1200                # тап по координатам
+adb shell input text "client@dev.coffeely"  # ввод текста
+adb shell input keyevent 4                  # «назад» (закрыть клавиатуру)
+adb shell uiautomator dump /sdcard/ui.xml && adb shell cat /sdcard/ui.xml  # координаты элементов
+adb logcat -d | grep -i coffeely            # логи приложения
+```
+
+Если приложение не видит бэкенд: проверь `curl http://localhost:8080/readyz` на хосте
+и убедись, что эмулятор запущен (не устройство) — адрес `10.0.2.2` работает только в эмуляторе.
+Для реального телефона в `api/ApiClient.kt` подставь IP компьютера в Wi-Fi.
+
 ### Адрес dev-бэкенда
 
 - Эмулятор Android: `http://10.0.2.2:8080` (дефолт, см. `api/ApiClient.kt`).

@@ -40,7 +40,11 @@
 
 - Arch Linux x86_64, юзер `incept1on` (группы `wheel`, `docker`).
 - Go 1.27 (`/usr/bin/go`). JDK 27 установлен (`/usr/lib/jvm/java-27-openjdk`).
-  Android SDK **не установлен** — нужен для сборки `mobile/` (команды в `mobile/README.md`).
+  Android SDK **установлен** в `/opt/android-sdk` (platform 36, build-tools 36, platform-tools, emulator).
+  AVD для тестов: `my_avd` (system-image android-36 google_apis x86_64). Запуск без окна:
+  `emulator -avd my_avd -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect`
+  (GPU → software rendering, окно под Wayland работает нестабильно).
+  Инструкция по сборке apk и запуску в эмуляторе — `mobile/README.md`.
 - Docker установлен пользователем. Если в сессии `docker` недоступен по правам
   (`permission denied ... /var/run/docker.sock`), обернуть команду в `newgrp docker <<<'<cmd>'` —
   это артефакт старой сессии, в новой сессии docker работает напрямую.
