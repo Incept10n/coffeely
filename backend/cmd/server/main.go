@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	_ "time/tzdata" // встроенная база таймзон (для контейнеров)
 	"time"
 
 	"github.com/Incept10n/coffeely/backend/internal/config"

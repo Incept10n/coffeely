@@ -68,9 +68,13 @@ type Item struct {
 // Store — SQL для заказов.
 type Store struct {
 	pool *pgxpool.Pool
+	// capacityChecker — движок ёмкости (points.CheckWindowCapacity); подменяется в тестах.
+	capacityChecker func(ctx context.Context, tx pgx.Tx, pointID string, slotStart time.Time) error
 }
 
-func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+func NewStore(pool *pgxpool.Pool, capacityChecker func(ctx context.Context, tx pgx.Tx, pointID string, slotStart time.Time) error) *Store {
+	return &Store{pool: pool, capacityChecker: capacityChecker}
+}
 
 // Create создаёт заказ (v1: статус paid — «оплата в кассе при получении», M4
 // добавит проверку ёмкости окна). deadline_at = начало окна − сумма prep_seconds.
@@ -100,6 +104,12 @@ func (s *Store) Create(ctx context.Context, pointID, clientID string, slotStart,
 	}
 	if !pointActive {
 		return Order{}, ErrPointInactive
+	}
+
+	// Движок ёмкости v1 (M4): лимит заказов на окно из capacity_config точки.
+	// До вставки (иначе транзакция увидит сам заказ) и под advisory-локом окна.
+	if err := s.capacityChecker(ctx, tx, pointID, slotStart); err != nil {
+		return Order{}, err
 	}
 
 	var deadline time.Time
