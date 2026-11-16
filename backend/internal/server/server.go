@@ -11,6 +11,7 @@ import (
 	"github.com/Incept10n/coffeely/backend/internal/admin"
 	"github.com/Incept10n/coffeely/backend/internal/auth"
 	"github.com/Incept10n/coffeely/backend/internal/config"
+	"github.com/Incept10n/coffeely/backend/internal/email"
 	"github.com/Incept10n/coffeely/backend/internal/httpx"
 	"github.com/Incept10n/coffeely/backend/internal/orders"
 	"github.com/Incept10n/coffeely/backend/internal/points"
@@ -20,6 +21,15 @@ import (
 
 // New собирает mux со всеми маршрутами; каждый запрос пишется в stdout.
 func New(pool *pgxpool.Pool, cfg config.Config) http.Handler {
+	var mailer auth.CodeSender
+	if cfg.MailPassword != "" {
+		mailer = email.NewEWS(cfg)
+	}
+	return NewWithMailer(pool, cfg, mailer)
+}
+
+// NewWithMailer — вариант с явным отправителем писем (тесты с фейковой почтой).
+func NewWithMailer(pool *pgxpool.Pool, cfg config.Config, mailer auth.CodeSender) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -43,13 +53,15 @@ func New(pool *pgxpool.Pool, cfg config.Config) http.Handler {
 	// Аутентификация (веха M2)
 	authStore := auth.NewStore(pool)
 	authHandlers := auth.NewHandlers(
-		auth.NewService(authStore, cfg),
+		auth.NewService(authStore, cfg, mailer),
 		auth.NewYandex(cfg),
 		cfg,
 	)
 	authenticate := authHandlers.Authenticate
 
 	mux.HandleFunc("POST /auth/register", authHandlers.Register)
+	mux.HandleFunc("POST /auth/verify-email", authHandlers.VerifyEmail)
+	mux.HandleFunc("POST /auth/resend-verification", authHandlers.ResendVerification)
 	mux.HandleFunc("POST /auth/login", authHandlers.Login)
 	mux.HandleFunc("POST /auth/refresh", authHandlers.Refresh)
 	mux.HandleFunc("POST /auth/logout", authHandlers.Logout)

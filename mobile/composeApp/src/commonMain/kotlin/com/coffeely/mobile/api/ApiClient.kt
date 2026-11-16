@@ -44,8 +44,17 @@ class ApiClient(baseUrl: String = platformApiBaseUrl()) {
 
     // --- аутентификация ---
 
-    suspend fun register(email: String, password: String): Result<AuthResponse> = runCatching {
+    suspend fun register(email: String, password: String): Result<RegisterResponse> = runCatching {
         postJson("/auth/register", RegisterRequest(email, password))
+    }
+
+    // Код из письма → подтверждение email и токены (вход сразу после регистрации).
+    suspend fun verifyEmail(email: String, code: String): Result<AuthResponse> = runCatching {
+        postJson("/auth/verify-email", VerifyEmailRequest(email, code))
+    }
+
+    suspend fun resendVerification(email: String): Result<ResendVerificationResponse> = runCatching {
+        postJson("/auth/resend-verification", ResendVerificationRequest(email))
     }
 
     suspend fun login(email: String, password: String): Result<AuthResponse> = runCatching {
@@ -149,12 +158,15 @@ class ApiClient(baseUrl: String = platformApiBaseUrl()) {
 
     private suspend inline fun <reified T> io.ktor.client.statement.HttpResponse.bodyOrThrow(): T {
         if (!status.isSuccess()) {
-            val msg = runCatching { body<ErrorResponse>().message }
-                .getOrDefault("ошибка ${status.value}")
-            throw ApiException(msg)
+            val parsed = runCatching { body<ErrorResponse>() }.getOrNull()
+            throw ApiException(
+                message = parsed?.message?.takeIf { it.isNotBlank() } ?: "ошибка ${status.value}",
+                code = parsed?.code.orEmpty(),
+            )
         }
         return body<T>()
     }
 }
 
-class ApiException(message: String) : Exception(message)
+// code — машинный код ошибки API (например, email_not_verified), message — текст для UI.
+class ApiException(message: String, val code: String = "") : Exception(message)

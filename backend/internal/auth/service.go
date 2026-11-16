@@ -2,56 +2,187 @@ package auth
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"log/slog"
+	"math/big"
 	"net/mail"
+	"strings"
 	"time"
 
 	"github.com/Incept10n/coffeely/backend/internal/config"
 	"github.com/Incept10n/coffeely/backend/internal/httpx"
 )
 
+// CodeSender отправляет код подтверждения email. nil — подтверждение выключено
+// (dev без почты): регистрация сразу выдаёт токены.
+type CodeSender interface {
+	SendVerificationCode(ctx context.Context, to, code string) error
+}
+
 // Service — бизнес-логика аутентификации: регистрация, вход, ротация refresh, Yandex.
 type Service struct {
-	store *Store
-	cfg   config.Config
+	store  *Store
+	cfg    config.Config
+	mailer CodeSender
 }
 
-func NewService(store *Store, cfg config.Config) *Service {
-	return &Service{store: store, cfg: cfg}
+func NewService(store *Store, cfg config.Config, mailer CodeSender) *Service {
+	return &Service{store: store, cfg: cfg, mailer: mailer}
 }
 
-// Register создаёт клиента (role=client) и выдаёт пару токенов. Приложение
-// регистрирует только клиентов: владелец регистрируется на сайте (RegisterOwner).
-func (s *Service) Register(ctx context.Context, email, password string) (User, TokenPair, error) {
+// RegisterOutcome — результат регистрации. Tokens пуст, если нужно подтвердить
+// email: тогда клиент вводит код и получает токены из VerifyEmail.
+type RegisterOutcome struct {
+	User                 User
+	Tokens               *TokenPair
+	VerificationRequired bool
+	EmailSent            bool
+}
+
+// Register создаёт клиента (role=client). При настроенной почте аккаунт
+// неактивен до ввода кода из письма: /auth/verify-email выдаёт токены.
+// Владелец регистрируется на сайте (RegisterOwner).
+func (s *Service) Register(ctx context.Context, email, password string) (RegisterOutcome, error) {
 	return s.registerAs(ctx, email, password, "client")
 }
 
 // RegisterOwner — регистрация владельца кофейни на сайте (личный кабинет).
-func (s *Service) RegisterOwner(ctx context.Context, email, password string) (User, TokenPair, error) {
+// Email владельца считается подтверждённым: кабинет не должен зависеть от почты.
+func (s *Service) RegisterOwner(ctx context.Context, email, password string) (RegisterOutcome, error) {
 	return s.registerAs(ctx, email, password, "owner")
 }
 
-func (s *Service) registerAs(ctx context.Context, email, password, role string) (User, TokenPair, error) {
+func (s *Service) registerAs(ctx context.Context, email, password, role string) (RegisterOutcome, error) {
 	if _, err := mail.ParseAddress(email); err != nil {
-		return User{}, TokenPair{}, fmt.Errorf("неверный email: %w", ErrBadCredentials)
+		return RegisterOutcome{}, fmt.Errorf("неверный email: %w", ErrBadCredentials)
 	}
 	if len(password) < 8 {
-		return User{}, TokenPair{}, fmt.Errorf("пароль короче 8 символов: %w", ErrBadCredentials)
+		return RegisterOutcome{}, fmt.Errorf("пароль короче 8 символов: %w", ErrBadCredentials)
 	}
+	email = strings.ToLower(strings.TrimSpace(email))
+
+	// Проверять email имеет смысл только для гостя приложения и только если
+	// почтовый канал настроен. Владельцы и бариста — доверенные аккаунты.
+	verify := role == "client" && s.mailer != nil
 
 	hash, err := HashPassword(password)
 	if err != nil {
+		return RegisterOutcome{}, err
+	}
+	user, err := s.store.CreateUser(ctx, email, role, hash, "", !verify)
+	if err != nil {
+		return RegisterOutcome{}, err
+	}
+
+	if !verify {
+		pair, err := s.issuePair(ctx, user)
+		if err != nil {
+			return RegisterOutcome{}, err
+		}
+		return RegisterOutcome{User: user, Tokens: &pair}, nil
+	}
+
+	sent := s.sendVerificationCode(ctx, user)
+	return RegisterOutcome{
+		User:                 user,
+		VerificationRequired: true,
+		EmailSent:            sent,
+	}, nil
+}
+
+// VerifyEmail проверяет код из письма, подтверждает email и выдаёт токены.
+// Повторный вызов для уже подтверждённого аккаунта просто логинит.
+func (s *Service) VerifyEmail(ctx context.Context, email, code string) (User, TokenPair, error) {
+	email = strings.ToLower(strings.TrimSpace(email))
+	code = strings.Join(strings.Fields(code), "")
+
+	user, _, _, verified, err := s.store.UserByEmail(ctx, email)
+	if err != nil {
 		return User{}, TokenPair{}, err
 	}
-	user, err := s.store.CreateUser(ctx, email, role, hash, "")
+	if verified {
+		pair, err := s.issuePair(ctx, user)
+		return user, pair, err
+	}
+
+	active, err := s.store.ActiveVerificationCode(ctx, user.ID)
 	if err != nil {
+		return User{}, TokenPair{}, err
+	}
+	if active.Attempts >= s.cfg.VerificationMaxAttempts {
+		return User{}, TokenPair{}, ErrTooManyAttempts
+	}
+	if time.Now().After(active.ExpiresAt) {
+		return User{}, TokenPair{}, ErrCodeExpired
+	}
+	// Считаем попытку до сравнения: подбор не должен быть бесплатным.
+	if err := s.store.IncrementCodeAttempts(ctx, active.ID); err != nil {
+		return User{}, TokenPair{}, err
+	}
+	if !hmac.Equal([]byte(hashVerificationCode(s.cfg.JWTSecret, user.ID, code)), []byte(active.CodeHash)) {
+		return User{}, TokenPair{}, ErrCodeNotFound
+	}
+	if err := s.store.MarkEmailVerified(ctx, user.ID, active.ID); err != nil {
 		return User{}, TokenPair{}, err
 	}
 	pair, err := s.issuePair(ctx, user)
-	if err != nil {
-		return User{}, TokenPair{}, err
+	return user, pair, err
+}
+
+// ResendVerification отправляет новый код, если прошло достаточно времени.
+// Для неизвестного/подтверждённого email — (false, 0, nil): не раскрываем,
+// зарегистрирован ли адрес.
+func (s *Service) ResendVerification(ctx context.Context, email string) (bool, time.Duration, error) {
+	if s.mailer == nil {
+		return false, 0, nil
 	}
-	return user, pair, nil
+	email = strings.ToLower(strings.TrimSpace(email))
+	user, _, _, verified, err := s.store.UserByEmail(ctx, email)
+	if err != nil {
+		if errors.Is(err, ErrBadCredentials) {
+			return false, 0, nil
+		}
+		return false, 0, err
+	}
+	if verified || user.Role != "client" {
+		return false, 0, nil
+	}
+
+	if last, ok, err := s.store.LastVerificationCodeAt(ctx, user.ID); err != nil {
+		return false, 0, err
+	} else if ok {
+		if wait := s.cfg.VerificationResendPeriod - time.Since(last); wait > 0 {
+			return false, wait, ErrResendTooSoon
+		}
+	}
+	return s.sendVerificationCode(ctx, user), 0, nil
+}
+
+// sendVerificationCode создаёт код, сохраняет хеш и отправляет письмо.
+// Ошибка почты не отменяет регистрацию: пользователь запросит код повторно.
+func (s *Service) sendVerificationCode(ctx context.Context, user User) bool {
+	if s.mailer == nil {
+		return false
+	}
+	code, err := newVerificationCode()
+	if err != nil {
+		slog.Error("verification code generate", "user_id", user.ID, "err", err)
+		return false
+	}
+	if _, err := s.store.SaveVerificationCode(ctx, user.ID, hashVerificationCode(s.cfg.JWTSecret, user.ID, code), s.cfg.VerificationCodeTTL); err != nil {
+		slog.Error("verification code save", "user_id", user.ID, "err", err)
+		return false
+	}
+	if err := s.mailer.SendVerificationCode(ctx, user.Email, code); err != nil {
+		slog.Error("verification email send", "user_id", user.ID, "email", user.Email, "err", err)
+		return false
+	}
+	return true
 }
 
 // Login — вход в приложение. Только клиент и бариста: владельцы заходят
@@ -81,7 +212,8 @@ func (s *Service) LoginOwner(ctx context.Context, email, password string) (User,
 
 // login — общая проверка email+пароль и выдача пары токенов.
 func (s *Service) login(ctx context.Context, email, password string) (User, TokenPair, error) {
-	user, passwordHash, yandexID, err := s.store.UserByEmail(ctx, email)
+	email = strings.ToLower(strings.TrimSpace(email))
+	user, passwordHash, _, verified, err := s.store.UserByEmail(ctx, email)
 	if err != nil {
 		return User{}, TokenPair{}, err
 	}
@@ -95,7 +227,10 @@ func (s *Service) login(ctx context.Context, email, password string) (User, Toke
 	if !ok {
 		return User{}, TokenPair{}, ErrBadCredentials
 	}
-	_ = yandexID
+	// Пароль верный, но email не подтверждён: вход закрыт до ввода кода.
+	if !verified {
+		return User{}, TokenPair{}, ErrEmailNotVerified
+	}
 	pair, err := s.issuePair(ctx, user)
 	if err != nil {
 		return User{}, TokenPair{}, err
@@ -153,6 +288,7 @@ func (s *Service) LoginYandex(ctx context.Context, yandexID, email string) (User
 	if yandexID == "" || email == "" {
 		return User{}, TokenPair{}, httpx.NewError(400, "yandex_profile", "Yandex не вернул id/email")
 	}
+	email = strings.ToLower(strings.TrimSpace(email))
 
 	user, found, err := s.store.UserByYandexID(ctx, yandexID)
 	if err != nil {
@@ -165,7 +301,7 @@ func (s *Service) LoginYandex(ctx context.Context, yandexID, email string) (User
 		}
 		switch {
 		case !ok:
-			user, err = s.store.CreateUser(ctx, email, "client", "", yandexID)
+			user, err = s.store.CreateUser(ctx, email, "client", "", yandexID, true)
 			if err != nil {
 				return User{}, TokenPair{}, err
 			}
@@ -208,4 +344,21 @@ func (s *Service) issuePair(ctx context.Context, user User) (TokenPair, error) {
 func (s *Service) userByID(ctx context.Context, id string) (User, error) {
 	u, _, _, err := s.store.UserByID(ctx, id)
 	return u, err
+}
+
+// newVerificationCode — 6 цифр из crypto/rand (не math/rand).
+func newVerificationCode() (string, error) {
+	n, err := rand.Int(rand.Reader, big.NewInt(1_000_000))
+	if err != nil {
+		return "", fmt.Errorf("auth: verification code: %w", err)
+	}
+	return fmt.Sprintf("%06d", n.Int64()), nil
+}
+
+// hashVerificationCode — HMAC-SHA256 с JWT_SECRET: в БД нет открытого кода,
+// а без секрета перебор 10^6 вариантов по украденной таблице бессмысленен.
+func hashVerificationCode(secret, userID, code string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte("coffeely/email-code/v1:" + userID + ":" + code))
+	return hex.EncodeToString(mac.Sum(nil))
 }

@@ -48,6 +48,16 @@ go run ./cmd/migrate drop   # снести всё (только dev!)
 | `YANDEX_CLIENT_ID` / `YANDEX_CLIENT_SECRET` | пусто | OAuth2 Yandex ID |
 | `YANDEX_REDIRECT_URL` | `http://localhost:8080/auth/yandex/callback` | callback OAuth |
 | `ADMIN_CRM_SECRET` | пусто | строка входа во внутреннюю админку `/admin`; пусто — админка выключена (503) |
+| `MAIL_EWS_URL` | `https://mail.inceptech.ru/EWS/Exchange.asmx` | EWS-эндпоинт Exchange |
+| `MAIL_USERNAME` | `watchly@inceptech.ru` | ящик для NTLM-авторизации в Exchange |
+| `MAIL_PASSWORD` | пусто | пароль ящика; **в prod обязателен**; пусто — подтверждение email выключено (dev) |
+| `MAIL_FROM` | `watchly@inceptech.ru` | адрес отправителя в письме |
+| `MAIL_FROM_NAME` | `coffeely` | имя отправителя |
+| `MAIL_INSECURE_SKIP_VERIFY` | `true` | не проверять TLS-сертификат Exchange (внутренний сертификат; `false` — проверять) |
+| `MAIL_TIMEOUT` | `10s` | таймаут отправки письма |
+| `VERIFICATION_CODE_TTL` | `15m` | срок жизни кода подтверждения email |
+| `VERIFICATION_RESEND_PERIOD` | `60s` | минимальный интервал повторной отправки кода |
+| `VERIFICATION_MAX_ATTEMPTS` | `5` | попыток ввода кода до запроса нового |
 
 ## Логирование
 
@@ -60,8 +70,10 @@ go run ./cmd/migrate drop   # снести всё (только dev!)
 
 | Метод | Путь | Доступ | Что делает |
 |---|---|---|---|
-| POST | `/auth/register` | все | регистрация клиента (email+пароль, argon2id), выдаёт access+refresh |
-| POST | `/auth/login` | все | вход, выдаёт access+refresh |
+| POST | `/auth/register` | все | регистрация клиента (email+пароль, argon2id); с почтой — `verification_required: true` без токенов, на email уходит код |
+| POST | `/auth/verify-email` | все | `{email, code}` → подтверждает email и выдаёт access+refresh |
+| POST | `/auth/resend-verification` | все | повторное письмо с кодом (не чаще `VERIFICATION_RESEND_PERIOD`) |
+| POST | `/auth/login` | все | вход, выдаёт access+refresh; до подтверждения email — 403 `email_not_verified` |
 | POST | `/auth/refresh` | все | ротация refresh: старый отзывается, выдаётся новый; повторное использование отзывает всю сессию |
 | POST | `/auth/logout` | все | отзывает refresh-токен |
 | GET | `/auth/me` | Bearer | текущий пользователь (id, email, роль) |
@@ -95,6 +107,21 @@ go run ./cmd/migrate drop   # снести всё (только dev!)
 `/admin/*` — сайт (только владелец), `/internal/admin/*` — внутренняя админка
 создателей (общий секрет, без пользователей и ролей). Владелец не входит в
 приложение (`/auth/login` для owner отвечает 403).
+
+### Подтверждение email
+
+`/auth/register` создаёт клиента, генерирует 6-значный код и отправляет его
+письмом через Exchange Web Services (EWS, NTLM). В БД лежит только HMAC-SHA256
+хеш кода; попытки считаются, срок и интервал повторной отправки — в конфиге.
+Токены регистрация не выдаёт: приложение показывает экран ввода кода и вызывает
+`/auth/verify-email`. `/auth/login` до подтверждения отвечает 403
+`email_not_verified`. Владельцы и бариста подтверждены сразу: их email задаёт
+сайт/владелец, а не гость. Если `MAIL_PASSWORD` пуст (dev), подтверждение
+выключено и регистрация работает по-старому — сразу с токенами.
+
+В Kubernetes поду backend нужен маршрут до Exchange: `hostAliases`
+`mail.inceptech.ru → 192.168.50.10` (см. `apps/coffeely/backend.yaml` в
+репозитории `inceptech`).
 
 Пароли бариста хранятся двумя способами: argon2id-хеш в `users.password_hash`
 (проверка входа) и обратимая AES-256-GCM копия в `users.password_enc` — чтобы

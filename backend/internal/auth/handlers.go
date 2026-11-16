@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"github.com/Incept10n/coffeely/backend/internal/config"
 	"github.com/Incept10n/coffeely/backend/internal/httpx"
@@ -42,6 +43,24 @@ type authResponse struct {
 	Tokens TokenPair `json:"tokens"`
 }
 
+// registerResponse — регистрация может требовать подтверждения email:
+// тогда tokens отсутствуют, а клиент показывает экран ввода кода.
+type registerResponse struct {
+	User                 User       `json:"user"`
+	Tokens               *TokenPair `json:"tokens,omitempty"`
+	VerificationRequired bool       `json:"verification_required"`
+	EmailSent            bool       `json:"email_sent"`
+}
+
+type verifyEmailRequest struct {
+	Email string `json:"email"`
+	Code  string `json:"code"`
+}
+
+type resendVerificationRequest struct {
+	Email string `json:"email"`
+}
+
 // POST /auth/register
 func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 	req, err := httpx.ReadJSON[registerRequest](r)
@@ -49,12 +68,53 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, err)
 		return
 	}
-	user, pair, err := h.svc.Register(r.Context(), req.Email, req.Password)
+	out, err := h.svc.Register(r.Context(), req.Email, req.Password)
 	if err != nil {
 		httpx.WriteError(w, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusCreated, authResponse{User: user, Tokens: pair})
+	httpx.WriteJSON(w, http.StatusCreated, registerResponse{
+		User:                 out.User,
+		Tokens:               out.Tokens,
+		VerificationRequired: out.VerificationRequired,
+		EmailSent:            out.EmailSent,
+	})
+}
+
+// POST /auth/verify-email — код из письма → подтверждение и токены.
+func (h *Handlers) VerifyEmail(w http.ResponseWriter, r *http.Request) {
+	req, err := httpx.ReadJSON[verifyEmailRequest](r)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	user, pair, err := h.svc.VerifyEmail(r.Context(), req.Email, req.Code)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, authResponse{User: user, Tokens: pair})
+}
+
+// POST /auth/resend-verification — новое письмо с кодом (не чаще раза в минуту).
+func (h *Handlers) ResendVerification(w http.ResponseWriter, r *http.Request) {
+	req, err := httpx.ReadJSON[resendVerificationRequest](r)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	sent, retryAfter, err := h.svc.ResendVerification(r.Context(), req.Email)
+	if err != nil {
+		if retryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())+1))
+		}
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"email_sent":          sent,
+		"retry_after_seconds": int(retryAfter.Seconds()),
+	})
 }
 
 // POST /auth/login
@@ -79,12 +139,15 @@ func (h *Handlers) OwnersRegister(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, err)
 		return
 	}
-	user, pair, err := h.svc.RegisterOwner(r.Context(), req.Email, req.Password)
+	out, err := h.svc.RegisterOwner(r.Context(), req.Email, req.Password)
 	if err != nil {
 		httpx.WriteError(w, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusCreated, authResponse{User: user, Tokens: pair})
+	httpx.WriteJSON(w, http.StatusCreated, registerResponse{
+		User:   out.User,
+		Tokens: out.Tokens,
+	})
 }
 
 // POST /owners/login — вход владельца в кабинет на сайте.

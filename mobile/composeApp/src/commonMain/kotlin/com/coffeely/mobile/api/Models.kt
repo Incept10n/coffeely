@@ -15,6 +15,28 @@ data class TokensDto(
 @Serializable
 data class AuthResponse(val user: UserDto, val tokens: TokensDto)
 
+// Регистрация может требовать подтверждения email: tokens придут после
+// ввода кода из письма (/auth/verify-email).
+@Serializable
+data class RegisterResponse(
+    val user: UserDto,
+    val tokens: TokensDto? = null,
+    val verification_required: Boolean = false,
+    val email_sent: Boolean = false,
+)
+
+@Serializable
+data class VerifyEmailRequest(val email: String, val code: String)
+
+@Serializable
+data class ResendVerificationRequest(val email: String)
+
+@Serializable
+data class ResendVerificationResponse(
+    val email_sent: Boolean = false,
+    val retry_after_seconds: Int = 0,
+)
+
 // Текущая загрузка точки: сколько ждать, если заказать сейчас.
 @Serializable
 data class PointLoadDto(

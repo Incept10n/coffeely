@@ -222,8 +222,8 @@ func (s *Store) CreateBarista(ctx context.Context, email, passwordHash string, p
 	defer tx.Rollback(ctx)
 
 	err = tx.QueryRow(ctx, `
-		INSERT INTO users (email, role, password_hash, password_enc)
-		VALUES ($1, 'barista', $2, $3)
+		INSERT INTO users (email, role, password_hash, password_enc, email_verified_at)
+		VALUES ($1, 'barista', $2, $3, now())
 		RETURNING id`, email, passwordHash, passwordEnc,
 	).Scan(&b.ID)
 	if err != nil {

@@ -3,6 +3,7 @@ package com.coffeely.mobile.screens
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -34,12 +35,15 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.coffeely.mobile.api.ApiClient
+import com.coffeely.mobile.api.ApiException
+import com.coffeely.mobile.api.AuthResponse
 import com.coffeely.mobile.api.TokenStore
 import com.coffeely.mobile.api.UserDto
 import kotlinx.coroutines.launch
 
 // Вход/регистрация через реальный API бэкенда (M2): email+пароль, argon2id.
-// Сессия сохраняется на устройстве (TokenStore), Yandex ID — следующий шаг.
+// После регистрации бэкенд отправляет код на email: вход открывается только
+// после ввода кода (экран подтверждения — в этом же файле).
 //
 // Кнопка «Регистрация» нажимается всегда, даже с пустыми полями: она открывает
 // отдельное окно регистрации. Пользователь не упирается в серую кнопку, а сразу
@@ -51,22 +55,61 @@ fun LoginScreen(api: ApiClient, onLoggedIn: (UserDto) -> Unit) {
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var showRegister by remember { mutableStateOf(false) }
+
+    // Непустой email — открыто окно подтверждения: пользователь вводит код из письма.
+    var verifyTarget by remember { mutableStateOf<String?>(null) }
+    var verifyNotice by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
-    fun auth(emailValue: String, passwordValue: String, register: Boolean) {
+    fun enter(resp: AuthResponse) {
+        TokenStore.set(resp.tokens.access_token, resp.tokens.refresh_token)
+        showRegister = false
+        verifyTarget = null
+        onLoggedIn(resp.user)
+    }
+
+    fun login(emailValue: String, passwordValue: String) {
         scope.launch {
             busy = true
             error = null
-            val result = if (register) {
-                api.register(emailValue.trim(), passwordValue)
-            } else {
-                api.login(emailValue.trim(), passwordValue)
-            }
-            result.fold(
+            api.login(emailValue.trim(), passwordValue).fold(
+                { resp -> enter(resp) },
+                { e ->
+                    if (e is ApiException && e.code == "email_not_verified") {
+                        // Пароль верный, но email не подтверждён: показываем ввод кода.
+                        showRegister = false
+                        verifyNotice = "Введите код из письма. Если письма нет — отправьте код ещё раз."
+                        verifyTarget = emailValue.trim()
+                    } else {
+                        error = e.message ?: "ошибка сети"
+                    }
+                },
+            )
+            busy = false
+        }
+    }
+
+    fun register(emailValue: String, passwordValue: String) {
+        scope.launch {
+            busy = true
+            error = null
+            api.register(emailValue.trim(), passwordValue).fold(
                 { resp ->
-                    TokenStore.set(resp.tokens.access_token, resp.tokens.refresh_token)
-                    showRegister = false
-                    onLoggedIn(resp.user)
+                    val tokens = resp.tokens
+                    if (tokens != null) {
+                        // Почта не настроена (dev): регистрация сразу выдаёт сессию.
+                        TokenStore.set(tokens.access_token, tokens.refresh_token)
+                        showRegister = false
+                        onLoggedIn(resp.user)
+                    } else {
+                        showRegister = false
+                        verifyNotice = if (resp.email_sent) {
+                            "Код отправлен на ${resp.user.email}. Введите его ниже."
+                        } else {
+                            "Письмо не отправилось. Нажмите «Отправить код ещё раз»."
+                        }
+                        verifyTarget = resp.user.email.ifBlank { emailValue.trim() }
+                    }
                 },
                 { error = it.message ?: "ошибка сети" },
             )
@@ -128,7 +171,7 @@ fun LoginScreen(api: ApiClient, onLoggedIn: (UserDto) -> Unit) {
                     CircularProgressIndicator()
                 } else {
                     Button(
-                        onClick = { auth(email, password, register = false) },
+                        onClick = { login(email, password) },
                         modifier = Modifier.fillMaxWidth(),
                         enabled = email.isNotBlank() && password.length >= 8,
                     ) {
@@ -146,7 +189,7 @@ fun LoginScreen(api: ApiClient, onLoggedIn: (UserDto) -> Unit) {
                         Text("Регистрация нового клиента")
                     }
                 }
-                if (!showRegister) {
+                if (!showRegister && verifyTarget == null) {
                     error?.let {
                         Spacer(Modifier.height(12.dp))
                         Text(
@@ -171,7 +214,8 @@ fun LoginScreen(api: ApiClient, onLoggedIn: (UserDto) -> Unit) {
             text = {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        "Аккаунт нужен, чтобы видеть свои заказы и точное время готовности.",
+                        "Аккаунт нужен, чтобы видеть свои заказы и точное время готовности. " +
+                            "На email придёт код подтверждения.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -206,7 +250,7 @@ fun LoginScreen(api: ApiClient, onLoggedIn: (UserDto) -> Unit) {
             },
             confirmButton = {
                 TextButton(
-                    onClick = { auth(regEmail, regPassword, register = true) },
+                    onClick = { register(regEmail, regPassword) },
                     enabled = canSubmit,
                 ) {
                     Text(if (busy) "Создаём…" else "Создать аккаунт")
@@ -218,6 +262,98 @@ fun LoginScreen(api: ApiClient, onLoggedIn: (UserDto) -> Unit) {
                     enabled = !busy,
                 ) {
                     Text("Отмена")
+                }
+            },
+        )
+    }
+
+    verifyTarget?.let { target ->
+        var code by remember(target) { mutableStateOf("") }
+        var verifyBusy by remember(target) { mutableStateOf(false) }
+        var verifyError by remember(target) { mutableStateOf<String?>(null) }
+        var notice by remember(target) { mutableStateOf(verifyNotice) }
+
+        AlertDialog(
+            onDismissRequest = { if (!verifyBusy) verifyTarget = null },
+            title = { Text("Подтверждение email") },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        target,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    notice?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall)
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    OutlinedTextField(
+                        value = code,
+                        onValueChange = { code = it.filter(Char::isDigit).take(6) },
+                        label = { Text("Код из письма") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    verifyError?.let {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            verifyBusy = true
+                            verifyError = null
+                            api.verifyEmail(target, code).fold(
+                                { resp -> enter(resp) },
+                                { verifyError = it.message ?: "ошибка сети" },
+                            )
+                            verifyBusy = false
+                        }
+                    },
+                    enabled = code.length == 6 && !verifyBusy,
+                ) {
+                    Text(if (verifyBusy) "Проверяем…" else "Подтвердить")
+                }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(
+                        onClick = {
+                            scope.launch {
+                                verifyBusy = true
+                                verifyError = null
+                                api.resendVerification(target).fold(
+                                    {
+                                        notice = if (it.email_sent) {
+                                            "Код отправлен повторно."
+                                        } else {
+                                            "Письмо не отправилось — попробуйте позже."
+                                        }
+                                    },
+                                    { verifyError = it.message ?: "ошибка сети" },
+                                )
+                                verifyBusy = false
+                            }
+                        },
+                        enabled = !verifyBusy,
+                    ) {
+                        Text("Отправить код")
+                    }
+                    TextButton(
+                        onClick = { verifyTarget = null },
+                        enabled = !verifyBusy,
+                    ) {
+                        Text("Отмена")
+                    }
                 }
             },
         )

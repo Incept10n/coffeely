@@ -105,10 +105,16 @@
   `apps/coffeely`) тянет мутабельные теги с `imagePullPolicy: Always`; после нового
   образа нужен `kubectl rollout restart deployment/backend -n coffeely`.
 - Секреты прода — OpenBao `secret/coffeely` (`password`, `jwt_secret`,
-  `admin_crm_secret`) → ExternalSecret собирает `DATABASE_URL`,
-  `POSTGRES_PASSWORD`, `JWT_SECRET`, `ADMIN_CRM_SECRET` в `coffeely-secrets`.
-  При добавлении `ADMIN_CRM_SECRET` сначала записать ключ в OpenBao, потом
-  обновлять ExternalSecret/Deployment — иначе синк упадёт на отсутствующем ключе.
+  `admin_crm_secret`, `mail_password`) → ExternalSecret собирает `DATABASE_URL`,
+  `POSTGRES_PASSWORD`, `JWT_SECRET`, `ADMIN_CRM_SECRET`, `MAIL_PASSWORD` в
+  `coffeely-secrets`. `mail_password` — пароль ящика `watchly@inceptech.ru` для
+  EWS/NTLM; без него backend в prod не стартует (подтверждение email обязательно).
+  При добавлении любого ключа сначала записать его в OpenBao, потом обновлять
+  ExternalSecret/Deployment — иначе синк упадёт на отсутствующем ключе.
+- Письма с кодом подтверждения уходят через EWS `https://mail.inceptech.ru/EWS/Exchange.asmx`
+  (NTLM, self-signed TLS по умолчанию: `MAIL_INSECURE_SKIP_VERIFY=true`).
+  В поде backend нужен `hostAliases`: `mail.inceptech.ru → 192.168.50.10`
+  (манифест в репозитории `Incept10n/inceptech`, `apps/coffeely/backend.yaml`).
 - Домен: `coffeely.inceptech.ru` — лендинг на `/`, API и WebSocket на `/api`
   (nginx срезает префикс перед проксированием в backend);
   TLS — cert-manager, конфиг nginx-LB в репозитории `nginx-inceptech-loadblalancer`.
@@ -128,8 +134,11 @@ curl http://localhost:8080/healthz
 (категории по статусам, цвета, архив дня) сделана. Добавлены: окно регистрации в
 приложении (кнопка активна всегда), внутренняя админка создателей `/admin`
 (секрет `ADMIN_CRM_SECRET`, аналитика платформы), редактор точки и меню,
-редактирование аккаунта бариста и видимый владельцу пароль. Коммит и push —
-только по явной команде пользователя, затем CI и рестарт
+редактирование аккаунта бариста и видимый владельцу пароль. Добавлено
+подтверждение email при регистрации в приложении: письмо с кодом через
+Exchange EWS (NTLM), вход открывается после `/auth/verify-email`; код в БД
+только HMAC-хешем, попытки и интервалы повторной отправки ограничены.
+Коммит и push — только по явной команде пользователя, затем CI и рестарт
 `deployment backend` / `deployment frontend` (`-n coffeely`) руками пользователя.
 
 Следующий шаг: пилот на живой точке (M7) и полевая проверка порогов AIK-14 §6;
