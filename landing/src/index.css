@@ -889,7 +889,12 @@ p {
   color: var(--muted);
 }
 
+.admin__chart {
+  position: relative;
+}
+
 .admin__bars {
+  position: relative;
   display: flex;
   align-items: flex-end;
   gap: 3px;
@@ -905,6 +910,48 @@ p {
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
+  border-radius: 6px;
+}
+
+.admin__bar-wrap:hover,
+.admin__bar-wrap--hover {
+  background: rgba(47, 33, 26, 0.06);
+}
+
+.admin__tooltip {
+  position: absolute;
+  top: 0;
+  z-index: 5;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 250px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: var(--espresso);
+  color: var(--cream);
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: center;
+  white-space: normal;
+  pointer-events: none;
+  box-shadow: 0 10px 24px -10px rgba(47, 33, 26, 0.6);
+}
+
+.admin__tooltip b {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  opacity: 0.72;
+}
+
+.admin__chart-readout {
+  margin-top: 8px;
+  min-height: 20px;
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .admin__bar {

@@ -522,6 +522,8 @@ function Dashboard({
               value: d.orders,
               label: barLabel(data.daily.length, i) ? d.date.slice(5) : undefined,
               title: `${d.date}: ${d.orders} заказов, ${money(d.revenue_minor)}, выдано ${d.given_out}`,
+              caption: d.date,
+              valueLabel: `${numFmt.format(d.orders)} заказов · ${money(d.revenue_minor)} · выдано ${d.given_out} · отменено ${d.cancelled}`,
             }))}
           />
         </Panel>
@@ -532,6 +534,8 @@ function Dashboard({
               value: d.revenue_minor,
               label: barLabel(data.daily.length, i) ? d.date.slice(5) : undefined,
               title: `${d.date}: ${money(d.revenue_minor)}`,
+              caption: d.date,
+              valueLabel: `${money(d.revenue_minor)} · выдано ${d.given_out} заказов`,
             }))}
             accent
           />
@@ -564,6 +568,8 @@ function Dashboard({
               value: h.orders,
               label: h.key % 3 === 0 ? String(h.key) : undefined,
               title: `${h.key}:00 — ${h.orders} заказов`,
+              caption: `${String(h.key).padStart(2, "0")}:00`,
+              valueLabel: `${numFmt.format(h.orders)} заказов`,
             }))}
           />
         </Panel>
@@ -577,6 +583,8 @@ function Dashboard({
               value: d.orders,
               label: WEEKDAYS[d.key - 1],
               title: `${WEEKDAYS[d.key - 1]}: ${d.orders} заказов`,
+              caption: WEEKDAYS[d.key - 1],
+              valueLabel: `${numFmt.format(d.orders)} заказов`,
             }))}
           />
         </Panel>
@@ -806,21 +814,56 @@ function Kpi({
   );
 }
 
-type BarItem = { id: string | number; value: number; label?: string; title: string };
+type BarItem = {
+  id: string | number;
+  value: number;
+  label?: string;
+  title: string;
+  caption?: string;
+  valueLabel?: string;
+};
 
 function Bars({ items, accent }: { items: BarItem[]; accent?: boolean }) {
+  const [hover, setHover] = useState<number | null>(null);
   const max = Math.max(1, ...items.map((i) => i.value));
+  const active = hover === null ? null : items[hover];
+
   return (
-    <div className="admin__bars">
-      {items.map((it) => (
-        <div className="admin__bar-wrap" key={it.id} title={it.title}>
+    <div className="admin__chart">
+      <div className="admin__bars" onMouseLeave={() => setHover(null)}>
+        {active && hover !== null && (
           <div
-            className={`admin__bar${accent ? " admin__bar--accent" : ""}${it.value === 0 ? " admin__bar--zero" : ""}`}
-            style={{ height: `${Math.round((it.value / max) * 100)}%` }}
-          />
-          {it.label ? <span className="admin__bar-label">{it.label}</span> : null}
-        </div>
-      ))}
+            className="admin__tooltip"
+            style={{
+              left: `${Math.min(92, Math.max(8, ((hover + 0.5) / items.length) * 100))}%`,
+            }}
+          >
+            {active.caption && <b>{active.caption}</b>}
+            {active.valueLabel ?? active.title}
+          </div>
+        )}
+        {items.map((it, i) => (
+          <div
+            className={`admin__bar-wrap${hover === i ? " admin__bar-wrap--hover" : ""}`}
+            key={it.id}
+            title={it.title}
+            aria-label={it.title}
+            onMouseEnter={() => setHover(i)}
+            onClick={() => setHover(i)}
+          >
+            <div
+              className={`admin__bar${accent ? " admin__bar--accent" : ""}${it.value === 0 ? " admin__bar--zero" : ""}`}
+              style={{ height: `${Math.round((it.value / max) * 100)}%` }}
+            />
+            {it.label ? <span className="admin__bar-label">{it.label}</span> : null}
+          </div>
+        ))}
+      </div>
+      <p className="admin__chart-readout">
+        {active
+          ? `${active.caption ? `${active.caption}: ` : ""}${active.valueLabel ?? active.title}`
+          : "Наведите на столбец — покажу значение"}
+      </p>
     </div>
   );
 }
