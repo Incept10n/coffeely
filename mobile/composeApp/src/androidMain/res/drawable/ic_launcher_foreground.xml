@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Чашка из favicon лендинга: тот же контур, вписана в safe zone адаптивной иконки (108x108). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <group
+        android:scaleX="3.5"
+        android:scaleY="3.5"
+        android:translateX="-5.5"
+        android:translateY="-7.25">
+
+        <path
+            android:fillColor="#F7F2EA"
+            android:pathData="M9,12h11v6a5,5 0 0 1 -5,5h-1a5,5 0 0 1 -5,-5z" />
+
+        <path
+            android:strokeColor="#F7F2EA"
+            android:strokeWidth="2"
+            android:pathData="M20,13h2a3,3 0 0 1 0,6h-2" />
+    </group>
+</vector>
