@@ -54,9 +54,10 @@ func TestWindowGrid(t *testing.T) {
 	if _, _, open := windowAt(at(21, 0), loc, 480, 1200, 5); open {
 		t.Fatal("21:00 должно быть закрыто")
 	}
-	// до открытия — первое окно дня
-	if start, _, _ := windowAt(at(6, 0), loc, 480, 1200, 5); !start.Equal(time.Date(2026, 11, 16, 8, 0, 0, 0, loc)) {
-		t.Fatalf("06:00 → %v", start)
+	// до открытия — закрыто: «первое окно дня» назначает только
+	// nextOpening (и дальше работает лимит maxLead)
+	if _, _, open := windowAt(at(6, 0), loc, 480, 1200, 5); open {
+		t.Fatal("06:00 до открытия должно быть закрыто")
 	}
 	// nextOpening: до открытия — сегодня, после — завтра
 	if got := nextOpening(at(6, 0), loc, 480); !got.Equal(time.Date(2026, 11, 16, 8, 0, 0, 0, loc)) {

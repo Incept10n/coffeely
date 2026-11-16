@@ -20,8 +20,18 @@ func NewService(store *Store, cfg config.Config) *Service {
 	return &Service{store: store, cfg: cfg}
 }
 
-// Register создаёт клиента (role=client) и выдаёт пару токенов.
+// Register создаёт клиента (role=client) и выдаёт пару токенов. Приложение
+// регистрирует только клиентов: владелец регистрируется на сайте (RegisterOwner).
 func (s *Service) Register(ctx context.Context, email, password string) (User, TokenPair, error) {
+	return s.registerAs(ctx, email, password, "client")
+}
+
+// RegisterOwner — регистрация владельца кофейни на сайте (личный кабинет).
+func (s *Service) RegisterOwner(ctx context.Context, email, password string) (User, TokenPair, error) {
+	return s.registerAs(ctx, email, password, "owner")
+}
+
+func (s *Service) registerAs(ctx context.Context, email, password, role string) (User, TokenPair, error) {
 	if _, err := mail.ParseAddress(email); err != nil {
 		return User{}, TokenPair{}, fmt.Errorf("неверный email: %w", ErrBadCredentials)
 	}
@@ -33,7 +43,7 @@ func (s *Service) Register(ctx context.Context, email, password string) (User, T
 	if err != nil {
 		return User{}, TokenPair{}, err
 	}
-	user, err := s.store.CreateUser(ctx, email, "client", hash, "")
+	user, err := s.store.CreateUser(ctx, email, role, hash, "")
 	if err != nil {
 		return User{}, TokenPair{}, err
 	}
@@ -44,8 +54,33 @@ func (s *Service) Register(ctx context.Context, email, password string) (User, T
 	return user, pair, nil
 }
 
-// Login — вход по email+пароль.
+// Login — вход в приложение. Только клиент и бариста: владельцы заходят
+// в кабинет на сайте (LoginOwner), роль owner в приложении не существует.
 func (s *Service) Login(ctx context.Context, email, password string) (User, TokenPair, error) {
+	user, pair, err := s.login(ctx, email, password)
+	if err != nil {
+		return User{}, TokenPair{}, err
+	}
+	if user.Role == "owner" {
+		return User{}, TokenPair{}, ErrOwnerSiteOnly
+	}
+	return user, pair, nil
+}
+
+// LoginOwner — вход владельца в кабинет на сайте. Не-владельцам отказ.
+func (s *Service) LoginOwner(ctx context.Context, email, password string) (User, TokenPair, error) {
+	user, pair, err := s.login(ctx, email, password)
+	if err != nil {
+		return User{}, TokenPair{}, err
+	}
+	if user.Role != "owner" {
+		return User{}, TokenPair{}, ErrNotOwner
+	}
+	return user, pair, nil
+}
+
+// login — общая проверка email+пароль и выдача пары токенов.
+func (s *Service) login(ctx context.Context, email, password string) (User, TokenPair, error) {
 	user, passwordHash, yandexID, err := s.store.UserByEmail(ctx, email)
 	if err != nil {
 		return User{}, TokenPair{}, err
@@ -135,6 +170,8 @@ func (s *Service) LoginYandex(ctx context.Context, yandexID, email string) (User
 				return User{}, TokenPair{}, err
 			}
 		case existing.Role == "owner":
+			// Владелец не входит в приложение и не связывается через Yandex ID —
+			// кабинет только по email+пароль на сайте.
 			return User{}, TokenPair{}, httpx.NewError(409, "yandex_owner", "аккаунт владельца не связывается через Yandex ID")
 		default:
 			if err := s.store.LinkYandex(ctx, existing.ID, yandexID); err != nil {

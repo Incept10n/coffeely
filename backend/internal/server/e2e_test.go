@@ -23,8 +23,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/lib/pq"
 
-	"github.com/Incept10n/coffeely/backend/internal/auth"
-	"github.com/Incept10n/coffeely/backend/internal/barista"
 	"github.com/Incept10n/coffeely/backend/internal/config"
 )
 
@@ -300,29 +298,20 @@ func TestYandexE2E(t *testing.T) {
 	}
 }
 
-// Тест: коды приглашений и права (403).
-func TestInviteCodesE2E(t *testing.T) {
+// Тест: бариста назначается флагом в БД (invite-коды упразднены вместе с ролью
+// owner): роль подхватывается при refresh (читается из БД), KDS-очередь доступна.
+func TestBaristaFlagE2E(t *testing.T) {
 	e := newTestEnv(t)
 	e.srv = httptest.NewServer(e.handler)
 	t.Cleanup(e.srv.Close)
 	ctx := context.Background()
 
-	// seed: точка и владелец
-	var pointID, ownerID string
+	// точка для привязки баристы
+	var pointID string
 	if err := e.pool.QueryRow(ctx,
 		`INSERT INTO points (title, address) VALUES ('Точка тест', 'ул. Тестовая 1') RETURNING id`,
 	).Scan(&pointID); err != nil {
 		t.Fatalf("seed point: %v", err)
-	}
-	if err := e.pool.QueryRow(ctx,
-		`INSERT INTO users (email, role, password_hash) VALUES ($1, 'owner', $2) RETURNING id`,
-		uniqueEmail(), "$argon2id$v=19$m=65536,t=3,p=4$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-	).Scan(&ownerID); err != nil {
-		t.Fatalf("seed owner: %v", err)
-	}
-	ownerAccess, err := auth.IssueAccessToken(e.cfg, ownerID, "owner", "owner@test.coffeely")
-	if err != nil {
-		t.Fatalf("owner token: %v", err)
 	}
 
 	// клиент регистрируется
@@ -333,80 +322,131 @@ func TestInviteCodesE2E(t *testing.T) {
 	}
 	clientAccess, clientRefresh := tokensFrom(t, resp)
 
-	// клиент не может выпускать коды
-	status, _ = e.doJSON(t, "POST", "/admin/invite-codes", clientAccess, map[string]string{"point_id": pointID})
+	// до флага очередь недоступна
+	status, _ = e.doJSON(t, "GET", "/barista/queue", clientAccess, nil)
 	if status != http.StatusForbidden {
-		t.Fatalf("admin/invite-codes клиентом: ждём 403, получили %d", status)
-	}
-	// без токена тоже
-	status, _ = e.doJSON(t, "POST", "/admin/invite-codes", "", map[string]string{"point_id": pointID})
-	if status != http.StatusUnauthorized {
-		t.Fatalf("admin/invite-codes без токена: ждём 401, получили %d", status)
+		t.Fatalf("queue клиентом: ждём 403, получили %d", status)
 	}
 
-	// owner выпускает код
-	status, resp = e.doJSON(t, "POST", "/admin/invite-codes", ownerAccess, map[string]any{"point_id": pointID, "ttl_hours": 24})
-	if status != http.StatusCreated {
-		t.Fatalf("invite create: статус %d: %v", status, resp)
+	// флаг в БД: роль + привязка к точке (то, что раньше делал claim-invite)
+	if _, err := e.pool.Exec(ctx,
+		`UPDATE users SET role = 'barista' WHERE email = $1`, email,
+	); err != nil {
+		t.Fatalf("flag barista: %v", err)
 	}
-	code, _ := resp["code"].(string)
-	if code == "" {
-		t.Fatalf("invite create: пустой код: %v", resp)
-	}
-
-	// неизвестный код
-	status, _ = e.doJSON(t, "POST", "/barista/claim-invite", clientAccess, map[string]string{"code": "NOPE1234"})
-	if status != http.StatusNotFound {
-		t.Fatalf("claim unknown: ждём 404, получили %d", status)
-	}
-
-	// клиент использует код → становится баристой точки
-	status, resp = e.doJSON(t, "POST", "/barista/claim-invite", clientAccess, map[string]string{"code": code})
-	if status != http.StatusOK {
-		t.Fatalf("claim: статус %d: %v", status, resp)
-	}
-	if resp["point_id"] != pointID {
-		t.Fatalf("claim: чужая точка: %v", resp)
+	if _, err := e.pool.Exec(ctx,
+		`INSERT INTO barista_points (user_id, point_id)
+		 SELECT u.id, $2 FROM users u WHERE u.email = $1`, email, pointID,
+	); err != nil {
+		t.Fatalf("bind point: %v", err)
 	}
 
 	// роль обновляется после refresh (роль читается из БД)
 	status, resp = e.doJSON(t, "POST", "/auth/refresh", "", map[string]string{"refresh_token": clientRefresh})
 	if status != http.StatusOK {
-		t.Fatalf("refresh после claim: статус %d: %v", status, resp)
+		t.Fatalf("refresh после флага: статус %d: %v", status, resp)
 	}
 	baristaAccess, _ := tokensFrom(t, resp)
 	status, resp = e.doJSON(t, "GET", "/auth/me", baristaAccess, nil)
 	if status != http.StatusOK || resp["role"] != "barista" {
-		t.Fatalf("me после claim: статус %d, роль %v", status, resp["role"])
+		t.Fatalf("me после флага: статус %d, роль %v", status, resp["role"])
 	}
 
-	// код одноразовый
-	status, _ = e.doJSON(t, "POST", "/barista/claim-invite", baristaAccess, map[string]string{"code": code})
-	if status != http.StatusGone {
-		t.Fatalf("claim re-use: ждём 410, получили %d", status)
-	}
-
-	// протухший код
-	expired, err := barista.NewStore(e.pool).CreateInviteCode(ctx, pointID, ownerID, -1*time.Hour)
-	if err != nil {
-		t.Fatalf("expired code: %v", err)
-	}
-	status, _ = e.doJSON(t, "POST", "/barista/claim-invite", baristaAccess, map[string]string{"code": expired.Code})
-	if status != http.StatusGone {
-		t.Fatalf("claim expired: ждём 410, получили %d", status)
-	}
-
-	// второй клиент берёт свежий код → тоже бариста (своя точка)
-	status, resp = e.doJSON(t, "POST", "/admin/invite-codes", ownerAccess, map[string]any{"point_id": pointID})
-	if status != http.StatusCreated {
-		t.Fatalf("invite create 2: статус %d", status)
-	}
-	code2, _ := resp["code"].(string)
-	email2 := uniqueEmail()
-	_, resp = e.doJSON(t, "POST", "/auth/register", "", map[string]string{"email": email2, "password": "supersecret1"})
-	access2, _ := tokensFrom(t, resp)
-	status, resp = e.doJSON(t, "POST", "/barista/claim-invite", access2, map[string]string{"code": code2})
+	// очередь доступна
+	status, resp = e.doJSON(t, "GET", "/barista/queue", baristaAccess, nil)
 	if status != http.StatusOK {
-		t.Fatalf("claim 2: статус %d: %v", status, resp)
+		t.Fatalf("queue бариста: статус %d: %v", status, resp)
+	}
+}
+
+// Тест: кабинет владельца на сайте. Владелец регистрируется через
+// /owners/register; вход в приложение ему запрещён (роль owner живёт только
+// на сайте); в кабинете создаёт точку с меню и рабочего баристу, который
+// затем входит в приложение и видит очередь.
+func TestOwnerAdminE2E(t *testing.T) {
+	e := newTestEnv(t)
+	e.srv = httptest.NewServer(e.handler)
+	t.Cleanup(e.srv.Close)
+
+	// владелец регистрируется на сайте
+	email := uniqueEmail()
+	status, resp := e.doJSON(t, "POST", "/owners/register", "", map[string]string{"email": email, "password": "supersecret1"})
+	if status != http.StatusCreated {
+		t.Fatalf("owners/register: статус %d: %v", status, resp)
+	}
+	if role, _ := resp["user"].(map[string]any)["role"].(string); role != "owner" {
+		t.Fatalf("owners/register: роль %v", resp["user"])
+	}
+	ownerAccess, _ := tokensFrom(t, resp)
+
+	// вход владельца в приложение запрещён
+	status, _ = e.doJSON(t, "POST", "/auth/login", "", map[string]string{"email": email, "password": "supersecret1"})
+	if status != http.StatusForbidden {
+		t.Fatalf("auth/login владельцем: ждём 403, получили %d", status)
+	}
+	// вход владельца в кабинет — ок
+	status, _ = e.doJSON(t, "POST", "/owners/login", "", map[string]string{"email": email, "password": "supersecret1"})
+	if status != http.StatusOK {
+		t.Fatalf("owners/login: статус %d", status)
+	}
+
+	// клиент и аноним в админку не допускаются
+	client := registerClient(t, e)
+	status, _ = e.doJSON(t, "GET", "/admin/points", client, nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("admin/points клиентом: ждём 403, получили %d", status)
+	}
+	status, _ = e.doJSON(t, "GET", "/admin/points", "", nil)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("admin/points без токена: ждём 401, получили %d", status)
+	}
+
+	// владелец создаёт точку с меню
+	status, resp = e.doJSON(t, "POST", "/admin/points", ownerAccess, map[string]any{
+		"title": "Точка владельца", "address": "ул. Тестовая 1",
+		"window_minutes": 5, "max_orders_per_window": 3,
+		"work_start": "08:00", "work_end": "20:00",
+		"menu": []map[string]any{{"title": "Капучино", "price_minor": 25000, "prep_seconds": 180}},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("admin/points: статус %d: %v", status, resp)
+	}
+	pointID, _ := resp["id"].(string)
+	if pointID == "" {
+		t.Fatalf("admin/points: нет id: %v", resp)
+	}
+	status, resp = e.doJSON(t, "GET", "/admin/points", ownerAccess, nil)
+	if status != http.StatusOK || len(resp["points"].([]any)) != 1 {
+		t.Fatalf("admin/points list: %d: %v", status, resp)
+	}
+
+	// владелец создаёт баристу на свою точку
+	bEmail := uniqueEmail()
+	status, resp = e.doJSON(t, "POST", "/admin/baristas", ownerAccess, map[string]string{"email": bEmail, "password": "supersecret2", "point_id": pointID})
+	if status != http.StatusCreated {
+		t.Fatalf("admin/baristas: статус %d: %v", status, resp)
+	}
+
+	// бариста входит в приложение (разрешено) и видит очередь
+	status, resp = e.doJSON(t, "POST", "/auth/login", "", map[string]string{"email": bEmail, "password": "supersecret2"})
+	if status != http.StatusOK {
+		t.Fatalf("auth/login бариста: статус %d: %v", status, resp)
+	}
+	if role, _ := resp["user"].(map[string]any)["role"].(string); role != "barista" {
+		t.Fatalf("auth/login бариста: роль %v", resp["user"])
+	}
+	baristaAccess, _ := tokensFrom(t, resp)
+	status, resp = e.doJSON(t, "GET", "/barista/queue", baristaAccess, nil)
+	if status != http.StatusOK {
+		t.Fatalf("queue бариста: статус %d: %v", status, resp)
+	}
+
+	// другой владелец не может привязать баристу к чужой точке
+	email2 := uniqueEmail()
+	_, resp = e.doJSON(t, "POST", "/owners/register", "", map[string]string{"email": email2, "password": "supersecret3"})
+	owner2, _ := tokensFrom(t, resp)
+	status, _ = e.doJSON(t, "POST", "/admin/baristas", owner2, map[string]string{"email": uniqueEmail(), "password": "supersecret4", "point_id": pointID})
+	if status != http.StatusForbidden {
+		t.Fatalf("чужая точка: ждём 403, получили %d", status)
 	}
 }

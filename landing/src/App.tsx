@@ -1,7 +1,71 @@
+import { useEffect, useState } from "react";
+import type { FormEvent, ReactNode } from "react";
+
 // APK публикуется CI-пайплайном в S3 (seaweedfs, https://s3.inceptech.ru).
 // Объект перезаписывается каждой сборкой из main, поэтому ссылка стабильная.
 const APK_URL = "https://s3.inceptech.ru/coffeely/coffeely.apk";
 const CONTACT = "hello@inceptech.ru";
+
+// API живёт на том же домене под префиксом /api (nginx срезает префикс).
+const API = "/api";
+
+type Tokens = { access: string; refresh: string };
+type User = { id: string; email: string; role: string };
+
+const TOKEN_KEY = "coffeely.owner";
+
+function loadTokens(): Tokens | null {
+  try {
+    const raw = localStorage.getItem(TOKEN_KEY);
+    return raw ? (JSON.parse(raw) as Tokens) : null;
+  } catch {
+    return null;
+  }
+}
+function saveTokens(t: Tokens) {
+  localStorage.setItem(TOKEN_KEY, JSON.stringify(t));
+}
+function clearTokens() {
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+type ApiOpts = { method?: string; body?: unknown; token?: string | null };
+
+async function api<T>(path: string, opts: ApiOpts = {}): Promise<T> {
+  const res = await fetch(API + path, {
+    method: opts.method ?? (opts.body ? "POST" : "GET"),
+    headers: {
+      "Content-Type": "application/json",
+      ...(opts.token ? { Authorization: `Bearer ${opts.token}` } : {}),
+    },
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  const data: unknown = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    let msg = `ошибка ${res.status}`;
+    const err = (data as { error?: { message?: unknown } }).error?.message;
+    if (typeof err === "string") msg = err;
+    else if (err) msg = JSON.stringify(err);
+    throw new Error(msg);
+  }
+  return data as T;
+}
+
+function authResponse(tokens: { access_token: string; refresh_token: string }): Tokens {
+  return { access: tokens.access_token, refresh: tokens.refresh_token };
+}
+
+// Роутинг лендинга: / — витрина, /owner/register — регистрация владельца,
+// /owner — личный кабинет (тарифы, точки, бариста). SPA-fallback отдаёт
+// index.html на любой путь (nginx try_files).
+export default function App() {
+  const path = window.location.pathname;
+  if (path.startsWith("/owner/register")) return <OwnerRegister />;
+  if (path.startsWith("/owner")) return <OwnerCabinet />;
+  return <Landing />;
+}
+
+/* ------------------------------- Витрина -------------------------------- */
 
 const steps = [
   {
@@ -36,19 +100,19 @@ const shopPoints = [
   },
 ];
 
-export default function App() {
+function Landing() {
   return (
     <>
       <header className="top">
         <div className="top__inner">
-          <a className="logo" href="#top" aria-label="coffeely">
+          <a className="logo" href="/" aria-label="coffeely">
             <span className="logo__mark" aria-hidden="true" />
             coffeely
           </a>
           <nav className="top__nav">
-            <a href="#how">Как это работает</a>
-            <a href="#shops">Для кофеен</a>
-            <a className="top__cta" href="#download">
+            <a href="/#how">Как это работает</a>
+            <a href="/#shops">Для кофеен</a>
+            <a className="top__cta" href="/#download">
               Скачать
             </a>
           </nav>
@@ -73,7 +137,7 @@ export default function App() {
                   Скачать приложение
                   <span className="button__hint">APK · Android 8.0+</span>
                 </a>
-                <a className="button button--ghost" href="#shops">
+                <a className="button button--ghost" href="/owner/register">
                   Я владелец кофейни
                 </a>
               </div>
@@ -158,18 +222,15 @@ export default function App() {
           </div>
           <div className="pitch">
             <div>
-              <p className="pitch__price">от 1 500 ₽ в месяц за точку</p>
+              <p className="pitch__price">Личный кабинет для владельцев</p>
               <p className="pitch__note">
-                Островок — 1 500 ₽, стандарт — 2 500 ₽, высокий трафик —
-                4 900 ₽. Без комиссии с заказа: скидки гостям остаются вашим
-                бюджетом.
+                Со всеми предложениями и условиями подключения можно
+                ознакомиться в личном кабинете — создайте его бесплатно прямо
+                на сайте.
               </p>
             </div>
-            <a
-              className="button button--light"
-              href={`mailto:${CONTACT}?subject=coffeely%20для%20кофейни`}
-            >
-              Подключить точку
+            <a className="button button--light" href="/owner/register">
+              Создать кабинет бесплатно
             </a>
           </div>
         </section>
@@ -206,6 +267,541 @@ export default function App() {
             <span className="logo__mark" aria-hidden="true" />
             coffeely
           </span>
+          <span className="foot__muted">
+            © {new Date().getFullYear()} Inceptech ·{" "}
+            <a href={`mailto:${CONTACT}`}>{CONTACT}</a>
+          </span>
+        </div>
+      </footer>
+    </>
+  );
+}
+
+/* --------------------- Регистрация владельца ---------------------------- */
+
+function OwnerRegister() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (loadTokens()) window.location.replace("/owner");
+  }, []);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const data = await api<{ tokens: { access_token: string; refresh_token: string } }>(
+        "/owners/register",
+        { body: { email: email.trim(), password } },
+      );
+      saveTokens(authResponse(data.tokens));
+      window.location.href = "/owner";
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ошибка сети");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <OwnerShell title="Личный кабинет владельца" subtitle="Бесплатно, без карты. В кабинете — предложения, ваши точки и рабочие аккаунты бариста.">
+      <form className="owner__form" onSubmit={submit}>
+        <label className="field">
+          <span>Email</span>
+          <input
+            type="email"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="owner@кофейня.ру"
+          />
+        </label>
+        <label className="field">
+          <span>Пароль (минимум 8 символов)</span>
+          <input
+            type="password"
+            required
+            minLength={8}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+        </label>
+        {error && <p className="owner__error">{error}</p>}
+        <button className="button button--wide" disabled={busy}>
+          {busy ? "Создаём…" : "Создать кабинет"}
+        </button>
+      </form>
+      <p className="owner__hint">
+        Уже есть кабинет?{" "}
+        <a href="/owner" className="owner__link">
+          Войти
+        </a>
+      </p>
+    </OwnerShell>
+  );
+}
+
+/* ------------------------- Личный кабинет -------------------------------- */
+
+type Point = {
+  id: string;
+  title: string;
+  address: string;
+  capacity_config: { window_minutes: number; max_orders_per_window: number; work_start: string; work_end: string };
+};
+
+type Barista = {
+  id: string;
+  email: string;
+  point_id: string;
+  point_title: string;
+  created_at: string;
+};
+
+const TARIFFS = [
+  { name: "Островок", price: "1 500 ₽/мес", note: "одна точка, базовая ёмкость" },
+  { name: "Стандарт", price: "2 500 ₽/мес", note: "точка с потоком, приоритет поддержки" },
+  { name: "Высокий трафик", price: "4 900 ₽/мес", note: "несколько окон и бариста, расширенная настройка" },
+];
+
+function OwnerCabinet() {
+  const [state, setState] = useState<"loading" | "login" | "ready">("loading");
+  const [points, setPoints] = useState<Point[]>([]);
+  const [baristas, setBaristas] = useState<Barista[]>([]);
+  const [createdBarista, setCreatedBarista] = useState<{ email: string; password: string } | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  async function refreshData(token: string) {
+    const [p, b] = await Promise.all([
+      api<{ points: Point[] }>("/admin/points", { token }),
+      api<{ baristas: Barista[] }>("/admin/baristas", { token }),
+    ]);
+    setPoints(p.points);
+    setBaristas(b.baristas);
+  }
+
+  useEffect(() => {
+    void (async () => {
+      const t = loadTokens();
+      if (!t) {
+        setState("login");
+        return;
+      }
+      try {
+        const me = await api<User>("/auth/me", { token: t.access });
+        if (me.role !== "owner") throw new Error("не владелец");
+        await refreshData(t.access);
+        setState("ready");
+      } catch {
+        try {
+          const data = await api<{ tokens: { access_token: string; refresh_token: string } }>(
+            "/auth/refresh",
+            { body: { refresh_token: t.refresh } },
+          );
+          const fresh = authResponse(data.tokens);
+          saveTokens(fresh);
+          await refreshData(fresh.access);
+          setState("ready");
+        } catch {
+          clearTokens();
+          setState("login");
+        }
+      }
+    })();
+  }, []);
+
+  if (state === "loading") {
+    return <OwnerShell title="Личный кабинет" subtitle="Загружаем…"><p className="owner__hint">…</p></OwnerShell>;
+  }
+  if (state === "login") {
+    return <OwnerLogin onDone={async () => {
+      const t = loadTokens();
+      if (t) {
+        await refreshData(t.access);
+      }
+      setState("ready");
+    }} />;
+  }
+
+  return (
+    <OwnerShell
+      title="Личный кабинет"
+      subtitle={
+        points.length === 0
+          ? "Создайте первую точку — она появится в приложении у гостей."
+          : `Точек: ${points.length} · бариста: ${baristas.length}`
+      }
+      onLogout={() => {
+        const t = loadTokens();
+        if (t) void api("/auth/logout", { body: { refresh_token: t.refresh } });
+        clearTokens();
+        window.location.href = "/";
+      }}
+    >
+      <section className="owner__block">
+        <h3>Предложения</h3>
+        <div className="tariffs">
+          {TARIFFS.map((t) => (
+            <div className="tariff" key={t.name}>
+              <p className="tariff__name">{t.name}</p>
+              <p className="tariff__price">{t.price}</p>
+              <p className="tariff__note">{t.note}</p>
+            </div>
+          ))}
+        </div>
+        <p className="owner__hint">
+          Без комиссии с заказа: скидки гостям остаются вашим бюджетом.
+          Вопросы — <a href={`mailto:${CONTACT}`}>{CONTACT}</a>.
+        </p>
+      </section>
+
+      <section className="owner__block">
+        <h3>Точки</h3>
+        {points.length === 0 && <p className="owner__hint">Пока ни одной точки.</p>}
+        <div className="list">
+          {points.map((p) => (
+            <div className="list__row" key={p.id}>
+              <div>
+                <strong>{p.title}</strong>
+                {p.address ? <span className="badge"> · {p.address}</span> : null}
+              </div>
+              <span className="badge">
+                окна {p.capacity_config?.window_minutes} мин · до{" "}
+                {p.capacity_config?.max_orders_per_window} зак. ·{" "}
+                {p.capacity_config?.work_start}–{p.capacity_config?.work_end}
+              </span>
+            </div>
+          ))}
+        </div>
+        <AddPointForm
+          onCreated={async (msg) => {
+            setNotice(msg);
+            const t = loadTokens();
+            if (t) await refreshData(t.access);
+          }}
+        />
+      </section>
+
+      <section className="owner__block">
+        <h3>Бариста</h3>
+        {baristas.length === 0 && <p className="owner__hint">Рабочих аккаунтов пока нет.</p>}
+        <div className="list">
+          {baristas.map((b) => (
+            <div className="list__row" key={b.id}>
+              <div>
+                <strong>{b.email}</strong>
+              </div>
+              <span className="badge">{b.point_title}</span>
+            </div>
+          ))}
+        </div>
+        {createdBarista && (
+          <p className="owner__created">
+            Бариста создан: <strong>{createdBarista.email}</strong> / пароль{" "}
+            <strong>{createdBarista.password}</strong> — передайте их ему для
+            входа в приложение.
+          </p>
+        )}
+        <AddBaristaForm
+          points={points}
+          onCreated={async (email, password) => {
+            setCreatedBarista({ email, password });
+            const t = loadTokens();
+            if (t) await refreshData(t.access);
+          }}
+        />
+      </section>
+
+      {notice && <p className="owner__hint">{notice}</p>}
+    </OwnerShell>
+  );
+}
+
+function OwnerLogin({ onDone }: { onDone: () => void | Promise<void> }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const data = await api<{ tokens: { access_token: string; refresh_token: string } }>(
+        "/owners/login",
+        { body: { email: email.trim(), password } },
+      );
+      saveTokens(authResponse(data.tokens));
+      await onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ошибка сети");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <OwnerShell title="Вход в кабинет" subtitle="Для владельцев кофейен. Регистрация — бесплатна.">
+      <form className="owner__form" onSubmit={submit}>
+        <label className="field">
+          <span>Email</span>
+          <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Пароль</span>
+          <input type="password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+        </label>
+        {error && <p className="owner__error">{error}</p>}
+        <button className="button button--wide" disabled={busy}>
+          {busy ? "Входим…" : "Войти"}
+        </button>
+      </form>
+      <p className="owner__hint">
+        Нет кабинета?{" "}
+        <a href="/owner/register" className="owner__link">
+          Создать бесплатно
+        </a>
+      </p>
+    </OwnerShell>
+  );
+}
+
+type PointForm = {
+  title: string;
+  address: string;
+  windowMinutes: string;
+  maxPerWindow: string;
+  workStart: string;
+  workEnd: string;
+  menuText: string;
+};
+
+function AddPointForm({ onCreated }: { onCreated: (msg: string) => void | Promise<void> }) {
+  const [form, setForm] = useState<PointForm>({
+    title: "",
+    address: "",
+    windowMinutes: "5",
+    maxPerWindow: "3",
+    workStart: "08:00",
+    workEnd: "20:00",
+    menuText: "Капучино:25000:180,Латте:27000:150",
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const set = (k: keyof PointForm) => (e: { target: { value: string } }) =>
+    setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    const menu = form.menuText
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((s) => {
+        const [title, price, prep] = s.split(":").map((x) => x.trim());
+        return { title, price_minor: Number(price), prep_seconds: Number(prep) };
+      });
+    const badMenu = menu.some(
+      (m) => !m.title || !Number.isFinite(m.price_minor) || m.price_minor <= 0 ||
+        !Number.isFinite(m.prep_seconds) || m.prep_seconds <= 0,
+    );
+    if (badMenu) {
+      setError("Меню: формат «Название:цена_в_копейках:prep_секунд», через запятую");
+      setBusy(false);
+      return;
+    }
+    try {
+      await api("/admin/points", {
+        token: loadTokens()?.access,
+        body: {
+          title: form.title.trim(),
+          address: form.address.trim(),
+          window_minutes: Number(form.windowMinutes),
+          max_orders_per_window: Number(form.maxPerWindow),
+          work_start: form.workStart,
+          work_end: form.workEnd,
+          menu,
+        },
+      });
+      setForm((f) => ({ ...f, title: "", address: "", menuText: f.menuText }));
+      await onCreated("Точка создана — видна в приложении у гостей.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ошибка сети");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="owner__form" onSubmit={submit}>
+      <div className="owner__grid">
+        <label className="field">
+          <span>Название точки</span>
+          <input required value={form.title} onChange={set("title")} placeholder="coffeely на Ленина" />
+        </label>
+        <label className="field">
+          <span>Адрес</span>
+          <input value={form.address} onChange={set("address")} placeholder="ул. Ленина, 1" />
+        </label>
+        <label className="field">
+          <span>Окно, минут</span>
+          <input type="number" min={1} max={60} required value={form.windowMinutes} onChange={set("windowMinutes")} />
+        </label>
+        <label className="field">
+          <span>Заказов на окно</span>
+          <input type="number" min={1} max={100} required value={form.maxPerWindow} onChange={set("maxPerWindow")} />
+        </label>
+        <label className="field">
+          <span>Начало работы</span>
+          <input required value={form.workStart} onChange={set("workStart")} placeholder="08:00" />
+        </label>
+        <label className="field">
+          <span>Конец работы</span>
+          <input required value={form.workEnd} onChange={set("workEnd")} placeholder="20:00" />
+        </label>
+      </div>
+      <label className="field">
+        <span>Меню: «Название:цена_в_копейках:prep_секунд», через запятую</span>
+        <textarea rows={2} value={form.menuText} onChange={set("menuText")} />
+      </label>
+      {error && <p className="owner__error">{error}</p>}
+      <button className="button" disabled={busy}>
+        {busy ? "Создаём…" : "Добавить точку"}
+      </button>
+    </form>
+  );
+}
+
+function AddBaristaForm({
+  points,
+  onCreated,
+}: {
+  points: Point[];
+  onCreated: (email: string, password: string) => void | Promise<void>;
+}) {
+  const [pointId, setPointId] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!pointId && points.length > 0) setPointId(points[0].id);
+  }, [points, pointId]);
+
+  function randomPassword() {
+    const alphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789";
+    let out = "";
+    for (let i = 0; i < 12; i++) out += alphabet[Math.floor(Math.random() * alphabet.length)];
+    setPassword(out);
+  }
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const data = await api<Barista>("/admin/baristas", {
+        token: loadTokens()?.access,
+        body: { email: email.trim(), password, point_id: pointId },
+      });
+      setEmail("");
+      setPassword("");
+      await onCreated(data.email, password);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ошибка сети");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (points.length === 0) {
+    return <p className="owner__hint">Сначала создайте точку — бариста привязывается к точке.</p>;
+  }
+  return (
+    <form className="owner__form" onSubmit={submit}>
+      <div className="owner__grid">
+        <label className="field">
+          <span>Точка</span>
+          <select value={pointId} onChange={(e) => setPointId(e.target.value)}>
+            {points.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.title}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Email бариста</span>
+          <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Пароль (мин. 8)</span>
+          <input required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} />
+        </label>
+      </div>
+      <div className="owner__row">
+        <button type="button" className="button button--ghost" onClick={randomPassword}>
+          Сгенерировать пароль
+        </button>
+        <button className="button" disabled={busy || !pointId}>
+          {busy ? "Создаём…" : "Создать баристу"}
+        </button>
+      </div>
+      {error && <p className="owner__error">{error}</p>}
+    </form>
+  );
+}
+
+/* --------------------------- Общий каркас -------------------------------- */
+
+function OwnerShell({
+  title,
+  subtitle,
+  children,
+  onLogout,
+}: {
+  title: string;
+  subtitle: string;
+  children: ReactNode;
+  onLogout?: () => void;
+}) {
+  return (
+    <>
+      <header className="top">
+        <div className="top__inner">
+          <a className="logo" href="/" aria-label="coffeely">
+            <span className="logo__mark" aria-hidden="true" />
+            coffeely
+          </a>
+          <nav className="top__nav">
+            {onLogout ? (
+              <button type="button" className="top__cta top__cta--button" onClick={onLogout}>
+                Выйти
+              </button>
+            ) : (
+              <a className="top__cta" href="/">
+                На витрину
+              </a>
+            )}
+          </nav>
+        </div>
+      </header>
+      <main className="owner">
+        <div className="owner__head">
+          <h1 className="owner__title">{title}</h1>
+          <p className="owner__subtitle">{subtitle}</p>
+        </div>
+        {children}
+      </main>
+      <footer className="foot">
+        <div className="foot__inner">
           <span className="foot__muted">
             © {new Date().getFullYear()} Inceptech ·{" "}
             <a href={`mailto:${CONTACT}`}>{CONTACT}</a>

@@ -301,14 +301,14 @@ func openState(capacity CapacityConfig, tz string, now time.Time) (bool, string)
 }
 
 // windowAt — окно сетки, в которое попадает момент ts (или первое окно дня).
-// open=false — ts вне рабочих часов.
+// open=false — ts вне рабочих часов (в т.ч. до открытия: минуты < startMin).
 func windowAt(ts time.Time, loc *time.Location, startMin, endMin, windowMinutes int) (start, end time.Time, open bool) {
 	if windowMinutes <= 0 {
 		windowMinutes = 5
 	}
 	local := ts.In(loc)
 	minutes := local.Hour()*60 + local.Minute()
-	if minutes >= endMin {
+	if minutes >= endMin || minutes < startMin {
 		return time.Time{}, time.Time{}, false
 	}
 	dayStart := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)

@@ -22,10 +22,11 @@ curl localhost:8080/readyz    # {"status":"ready","db":true} — и БД отв�
 
 ## Миграции
 
-SQL up/down в `backend/migrations/`; схема v1 (веха M1): users (роли
-client/barista/owner), points (capacity_config), barista_points,
-barista_invite_codes, menu_items, orders (deadline_at — ядро AIK-11),
-order_items, order_events (журнал для метрик дедлайнов, AIK-14 §6).
+SQL up/down в `backend/migrations/`; users (роли client/barista; owner —
+только для сайта, в приложение не входит), points (capacity_config, owner_id —
+владелец точки), barista_points (привязка баристы к точке), menu_items,
+orders (deadline_at — ядро AIK-11), order_items, order_events (журнал для
+метрик дедлайнов, AIK-14 §6). Invite-коды удалены в 000004.
 
 ```sh
 make migrate        # вверх до конца
@@ -74,8 +75,16 @@ go run ./cmd/migrate drop   # снести всё (только dev!)
 | GET | `/barista/metrics?day=YYYY-MM-DD` | Bearer barista | % соблюдённых дедлайнов за день |
 | GET | `/ws/points/{id}` | Bearer barista | realtime точки: новые заказы и статусы |
 | GET | `/ws/orders` | Bearer | realtime клиента: статусы его заказов |
-| POST | `/barista/claim-invite` | Bearer | одноразовый код → роль barista + привязка к точке |
-| POST | `/admin/invite-codes` | Bearer owner | выпуск кода приглашения для точки |
+| POST | `/owners/register` | все | регистрация владельца кофейни на сайте (только веб) |
+| POST | `/owners/login` | все | вход владельца в кабинет на сайте |
+| POST | `/admin/points` | Bearer owner | создать точку (+меню) владельца |
+| GET | `/admin/points` | Bearer owner | точки владельца |
+| POST | `/admin/baristas` | Bearer owner | создать рабочий аккаунт баристы на свою точку |
+| GET | `/admin/baristas` | Bearer owner | список бариста по точкам владельца |
+
+Каналы разведены: `/auth/*` — приложение (клиент и бариста), `/owners/*` и
+`/admin/*` — сайт (только владелец). Владелец не входит в приложение
+(`/auth/login` для owner отвечает 403).
 
 ### Движок ёмкости (v2, без выбора окон)
 
@@ -97,18 +106,29 @@ E2E-тесты (`go test ./...`) гоняют все флоу против те�
 
 ## Бутстрап точки (dev и пилот)
 
-Первая точка, меню и владелец создаются seed-командой (до появления CRM):
+Точка и меню создаются seed-командой (dev-данные, точки без владельца) либо в
+личном кабинете на сайте — основной путь для прода:
 
 ```sh
 go run ./cmd/seed \
   -point "coffeely на Ленина" -address "ул. Ленина 1" \
-  -email owner@example.com -password "strong-password" \
   -menu "Капучино:25000:180,Латте:27000:150,Американо:18000:90"
 ```
 
 Формат меню: `Название:цена_в_копейках:prep_секунд`. Команда идемпотентна
-(повторный запуск не дублирует точку/юзеров/позиции). Владелец выпускает
-invite-коды через `POST /admin/invite-codes`, бариста клеймит точку кодом.
+(повторный запуск не дублирует точку/позиции). Пользователей seed не создаёт.
+
+Прод-путь: владелец регистрируется на `https://coffeely.inceptech.ru/owner/register`
+(бесплатно), в кабинете `/owner` видит тарифы, добавляет свои точки и создаёт
+рабочие аккаунты бариста — бариста входит с ними в приложение и попадает в KDS.
+Аварийный путь (без кабинета) — флаг в БД:
+
+```sql
+UPDATE users SET role = 'barista' WHERE email = '...';
+INSERT INTO barista_points (user_id, point_id)
+  SELECT u.id, p.id FROM users u, points p
+  WHERE u.email = '...' AND p.title = '...';
+```
 
 ## Сборка
 
@@ -125,8 +145,8 @@ cmd/migrate/      — запуск миграций (go run ./cmd/migrate up|dow
 internal/config/  — конфигурация (env)
 internal/db/      — pgxpool, подключение к БД
 internal/server/  — сборка маршрутов + e2e-тесты
-internal/auth/    — (M2) argon2id, JWT access+refresh, Yandex ID, middleware ролей
-internal/barista/ — (M2) коды приглашений, привязка баристы к точке
+internal/auth/    — argon2id, JWT access+refresh, Yandex ID, middleware ролей
+internal/admin/   — кабинет владельца: точки, рабочие аккаунты бариста
 internal/httpx/   — JSON-помощники, API-ошибки
 internal/orders/  — (M3/M4) заказы, статусы, KDS-очередь
 internal/points/  — (M4) точки, меню
@@ -136,8 +156,12 @@ migrations/       — SQL-миграции (golang-migrate)
 
 ## Домены и роли
 
-- Роли: `client`, `barista` (+ `owner` зарезервирован под CRM-сайт).
-- Бариста привязывается к точке через код приглашения; видит только заказы своей точки.
+- `client` — гость: регистрируется и входит в приложение, заказывает кофе.
+- `barista` — рабочий аккаунт, который создаёт владелец в кабинете на сайте
+  (или флагом в БД — аварийный путь); входит в приложение, видит KDS своей точки.
+- `owner` — владелец кофейни: существует только на сайте (кабинет `/owner`:
+  тарифы, свои точки, создание бариста). В приложение не входит.
+- Бариста привязан к точке через `barista_points`; видит только заказы своей точки.
 - Движок ёмкости v1: конфигурируемое число заказов на 5-минутное окно на точку
   (баристы × заказы/окно); автоподбор по модели кофемашины — v2.
 - Realtime-очередь баристы: Centrifugo (v1 — WebSocket).

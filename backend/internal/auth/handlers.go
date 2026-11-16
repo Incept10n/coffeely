@@ -38,7 +38,7 @@ type logoutRequest struct {
 }
 
 type authResponse struct {
-	User User      `json:"user"`
+	User   User      `json:"user"`
 	Tokens TokenPair `json:"tokens"`
 }
 
@@ -65,6 +65,36 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, pair, err := h.svc.Login(r.Context(), req.Email, req.Password)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, authResponse{User: user, Tokens: pair})
+}
+
+// POST /owners/register — регистрация владельца кофейни на сайте (кабинет).
+func (h *Handlers) OwnersRegister(w http.ResponseWriter, r *http.Request) {
+	req, err := httpx.ReadJSON[registerRequest](r)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	user, pair, err := h.svc.RegisterOwner(r.Context(), req.Email, req.Password)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, authResponse{User: user, Tokens: pair})
+}
+
+// POST /owners/login — вход владельца в кабинет на сайте.
+func (h *Handlers) OwnersLogin(w http.ResponseWriter, r *http.Request) {
+	req, err := httpx.ReadJSON[loginRequest](r)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	user, pair, err := h.svc.LoginOwner(r.Context(), req.Email, req.Password)
 	if err != nil {
 		httpx.WriteError(w, err)
 		return

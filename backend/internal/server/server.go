@@ -8,8 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/Incept10n/coffeely/backend/internal/admin"
 	"github.com/Incept10n/coffeely/backend/internal/auth"
-	"github.com/Incept10n/coffeely/backend/internal/barista"
 	"github.com/Incept10n/coffeely/backend/internal/config"
 	"github.com/Incept10n/coffeely/backend/internal/httpx"
 	"github.com/Incept10n/coffeely/backend/internal/orders"
@@ -55,9 +55,17 @@ func New(pool *pgxpool.Pool, cfg config.Config) http.Handler {
 	mux.HandleFunc("GET /auth/yandex/start", authHandlers.YandexStart)
 	mux.HandleFunc("GET /auth/yandex/callback", authHandlers.YandexCallback)
 
-	// Бариста: коды приглашений и привязка к точке (веха M2)
-	baristaHandlers := barista.NewHandlers(barista.NewStore(pool))
-	baristaHandlers.RegisterRoutes(mux, authenticate)
+	// Кабинет владельца на сайте: регистрация и вход (только веб, не приложение).
+	mux.HandleFunc("POST /owners/register", authHandlers.OwnersRegister)
+	mux.HandleFunc("POST /owners/login", authHandlers.OwnersLogin)
+
+	// Админка владельца: свои точки и рабочие аккаунты бариста.
+	adminHandlers := admin.NewHandlers(admin.NewStore(pool))
+	ownerOnly := adminHandlers.RequireOwner(authenticate)
+	mux.Handle("POST /admin/points", ownerOnly(http.HandlerFunc(adminHandlers.CreatePoint)))
+	mux.Handle("GET /admin/points", ownerOnly(http.HandlerFunc(adminHandlers.ListPoints)))
+	mux.Handle("POST /admin/baristas", ownerOnly(http.HandlerFunc(adminHandlers.CreateBarista)))
+	mux.Handle("GET /admin/baristas", ownerOnly(http.HandlerFunc(adminHandlers.ListBaristas)))
 
 	// Заказы, KDS-очередь, realtime (M3) + клиентский флоу (M4)
 	pointsStore := points.NewStore(pool)

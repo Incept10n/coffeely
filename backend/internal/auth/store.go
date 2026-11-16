@@ -34,6 +34,9 @@ var (
 	ErrNoPassword     = httpx.NewError(401, "no_password", "вход по паролю недоступен")
 	ErrRefreshReuse   = httpx.NewError(401, "refresh_reuse", "refresh-токен уже использован")
 	ErrRefreshInvalid = httpx.NewError(401, "refresh_invalid", "refresh-токен недействителен")
+	// Роль owner существует только на сайте: приложение клиентское.
+	ErrOwnerSiteOnly = httpx.NewError(403, "owner_site_only", "вход владельцев — на сайте coffeely.inceptech.ru/owner")
+	ErrNotOwner      = httpx.NewError(403, "not_owner", "кабинет доступен только владельцам")
 )
 
 func isUniqueViolation(err error) bool {

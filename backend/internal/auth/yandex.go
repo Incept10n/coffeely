@@ -98,7 +98,7 @@ func (y *Yandex) Callback(ctx context.Context, code, state string) (yandexID, em
 		return "", "", fmt.Errorf("yandex info: статус %d: %s", infoResp.StatusCode, body)
 	}
 	var info struct {
-		ID          string `json:"id"`
+		ID           string `json:"id"`
 		DefaultEmail string `json:"default_email"`
 	}
 	if err := json.NewDecoder(infoResp.Body).Decode(&info); err != nil {
