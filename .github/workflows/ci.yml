@@ -120,7 +120,11 @@ jobs:
     permissions:
       contents: read
     steps:
+      # Полная история: versionCode = git rev-list --count HEAD, иначе на
+      # shallow-клоне он всегда 1 и обновление не встанет поверх локальной сборки.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-java@v4
         with:
@@ -156,7 +160,7 @@ jobs:
             -Pcoffeely.apiBaseUrl="${API_BASE_URL}" \
             --no-daemon --stacktrace
 
-      - name: Проверка подписи
+      - name: Проверка подписи и версии
         run: |
           APK=mobile/composeApp/build/outputs/apk/release/composeApp-release.apk
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$APK" \
@@ -166,6 +170,14 @@ jobs:
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$APK" \
             | grep -qi "662e4ae3e57414fb52645b362b78bbfb7d2cdb35f6901dedee56f966b84f8c70" \
             || { echo "::error::подпись APK не совпадает с ключом coffeely"; exit 1; }
+          # versionCode растёт от коммитов; 1 означает shallow-клона и конфликт версий.
+          "$ANDROID_HOME/build-tools/36.0.0/aapt2" dump badging "$APK" | head -1
+          VERSION_CODE="$("$ANDROID_HOME/build-tools/36.0.0/aapt2" dump badging "$APK" \
+            | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" | head -1)"
+          if [ "${VERSION_CODE:-0}" -le 1 ]; then
+            echo "::error::versionCode=$VERSION_CODE — нужна полная история git (fetch-depth: 0)"
+            exit 1
+          fi
 
       - name: Подготовка артефакта
         run: |
