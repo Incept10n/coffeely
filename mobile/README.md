@@ -29,6 +29,7 @@ composeApp/src/commonMain/
   screens/ClientScreens.kt   — точки → меню/заказ → статус → «мои заказы»
   screens/BaristaScreen.kt   — KDS-очередь баристы
   ui/Theme.kt                — тема coffeely
+  ui/YandexSignIn.kt         — кнопка «Войти с Яндексом» (expect; LoginSDK в androidMain)
 gradle/libs.versions.toml    — версии всех зависимостей
 ```
 
@@ -104,6 +105,30 @@ coffeely.keyPassword=…
 
 CI (`.github/workflows/ci.yml`, job `apk`) собирает именно прод-сборку и выкладывает её
 в S3: `https://s3.inceptech.ru/coffeely/coffeely.apk` (эту ссылку отдаёт лендинг).
+
+### Вход через Яндекс ID
+
+Кнопка «Войти с Яндексом» работает через Yandex LoginSDK 3.1.3. Ей нужен ClientID
+приложения Яндекс OAuth — он попадает в манифест (`YANDEX_CLIENT_ID`) и в
+`BuildConfig.YANDEX_CLIENT_ID`. Источники по убыванию приоритета:
+
+```sh
+# 1) Gradle property
+./gradlew :composeApp:assembleDebug -Pcoffeely.yandexClientId=<ClientID>
+# 2) mobile/local.properties (в .gitignore)
+coffeely.yandexClientId=<ClientID>
+# 3) env (так делает CI)
+COFFEELY_YANDEX_CLIENT_ID=<ClientID> ./gradlew :composeApp:assembleRelease
+```
+
+Пусто — кнопки нет, вход остаётся email+пароль (сервер тоже сообщает через
+`GET /auth/providers`, настроен ли Яндекс). ClientID — **не секрет**: он публичный,
+секрет приложения живёт только в OpenBao на бэкенде.
+
+В консоли oauth.yandex.ru для Android-приложения нужны package name
+`com.coffeely.mobile` и SHA-256 ключа подписи — у нас один стабильный ключ для
+debug и release (см. выше), поэтому отпечаток один.
+
 
 Установка на подключённое устройство:
 `/opt/android-sdk/platform-tools/adb install -r composeApp/build/outputs/apk/debug/composeApp-debug.apk`.

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/Incept10n/coffeely/backend/internal/config"
 	"github.com/Incept10n/coffeely/backend/internal/httpx"
@@ -243,4 +244,52 @@ func (h *Handlers) YandexCallback(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(authResponse{User: user, Tokens: pair})
+}
+
+// yandexTokenRequest — токен, который LoginSDK выдал приложению на устройстве.
+type yandexTokenRequest struct {
+	Token string `json:"token"`
+}
+
+// POST /auth/yandex/token — вход по токену из LoginSDK (мобильное приложение).
+// Токен проверяется через login.yandex.ru/info: подпись гарантирует Яндекс,
+// client_id в ответе — что токен выдан именно нашему приложению.
+func (h *Handlers) YandexToken(w http.ResponseWriter, r *http.Request) {
+	if !h.cfg.YandexEnabled() {
+		httpx.WriteError(w, httpx.NewError(http.StatusServiceUnavailable,
+			"yandex_disabled", "вход через Яндекс не настроен"))
+		return
+	}
+	req, err := httpx.ReadJSON[yandexTokenRequest](r)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	if strings.TrimSpace(req.Token) == "" {
+		httpx.WriteError(w, httpx.NewError(http.StatusBadRequest,
+			"yandex_token", "не передан токен Яндекса"))
+		return
+	}
+
+	yandexID, email, err := h.yandex.Profile(r.Context(), req.Token)
+	if err != nil {
+		// Детали (в т.ч. ответ Яндекса) наружу не отдаём: они попадут в логи клиента.
+		httpx.WriteError(w, httpx.NewError(http.StatusUnauthorized,
+			"yandex_token", "не удалось подтвердить вход через Яндекс"))
+		return
+	}
+	user, pair, err := h.svc.LoginYandex(r.Context(), yandexID, email)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, authResponse{User: user, Tokens: pair})
+}
+
+// GET /auth/providers — какие способы входа настроены на сервере.
+// Приложение по этому ответу показывает или прячет кнопку «Войти с Яндексом».
+func (h *Handlers) Providers(w http.ResponseWriter, r *http.Request) {
+	httpx.WriteJSON(w, http.StatusOK, map[string]bool{
+		"yandex": h.cfg.YandexEnabled(),
+	})
 }

@@ -155,6 +155,9 @@ jobs:
           COFFEELY_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           COFFEELY_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           COFFEELY_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          # ClientID приложения Яндекс OAuth (не секрет). Задан — в APK
+          # появляется кнопка «Войти с Яндексом»; пусто — вход только по паролю.
+          COFFEELY_YANDEX_CLIENT_ID: ${{ vars.COFFEELY_YANDEX_CLIENT_ID }}
         run: |
           ./gradlew :composeApp:assembleRelease \
             -Pcoffeely.apiBaseUrl="${API_BASE_URL}" \

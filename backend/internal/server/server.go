@@ -68,6 +68,9 @@ func NewWithMailer(pool *pgxpool.Pool, cfg config.Config, mailer auth.CodeSender
 	mux.Handle("GET /auth/me", authenticate(http.HandlerFunc(authHandlers.Me)))
 	mux.HandleFunc("GET /auth/yandex/start", authHandlers.YandexStart)
 	mux.HandleFunc("GET /auth/yandex/callback", authHandlers.YandexCallback)
+	// Вход через Яндекс ID из мобильного приложения (LoginSDK): токен → сессия.
+	mux.HandleFunc("POST /auth/yandex/token", authHandlers.YandexToken)
+	mux.HandleFunc("GET /auth/providers", authHandlers.Providers)
 
 	// Кабинет владельца на сайте: регистрация и вход (только веб, не приложение).
 	mux.HandleFunc("POST /owners/register", authHandlers.OwnersRegister)

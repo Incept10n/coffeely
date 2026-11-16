@@ -140,6 +140,14 @@ data class RefreshRequest(val refresh_token: String)
 @Serializable
 data class LogoutRequest(val refresh_token: String)
 
+// Какие способы входа настроены на сервере (приложение прячет кнопки).
+@Serializable
+data class ProvidersResponse(val yandex: Boolean = false)
+
+// Токен из LoginSDK: сервер проверит его в Яндексе и выдаст свою сессию.
+@Serializable
+data class YandexTokenRequest(val token: String)
+
 // Человекочитаемые подписи статусов и срочности.
 
 // Что происходит с заказом — так, как это видит гость.

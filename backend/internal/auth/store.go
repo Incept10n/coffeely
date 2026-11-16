@@ -138,9 +138,15 @@ func (s *Store) UserByID(ctx context.Context, id string) (User, string, string, 
 }
 
 // LinkYandex связывает yandex_id с существующим пользователем по email.
+// Заодно проставляет подтверждение email: Яндекс уже проверил адрес, иначе
+// такой пользователь после входа через Яндекс продолжал бы получать
+// email_not_verified при входе паролем.
 func (s *Store) LinkYandex(ctx context.Context, userID, yandexID string) error {
 	_, err := s.pool.Exec(ctx,
-		`UPDATE users SET yandex_id = $2 WHERE id = $1 AND yandex_id IS NULL`,
+		`UPDATE users
+		    SET yandex_id = $2,
+		        email_verified_at = COALESCE(email_verified_at, now())
+		  WHERE id = $1 AND yandex_id IS NULL`,
 		userID, yandexID,
 	)
 	if err != nil {

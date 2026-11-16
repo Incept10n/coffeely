@@ -108,6 +108,11 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
+// YandexEnabled — включён ли вход через Яндекс ID. Достаточно ClientID:
+// мобильное приложение меняет токен LoginSDK на сессию через /auth/yandex/token,
+// серверный обмен code→token (web-флоу) для этого не нужен.
+func (c Config) YandexEnabled() bool { return c.YandexClientID != "" }
+
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v

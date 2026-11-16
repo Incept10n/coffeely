@@ -33,6 +33,8 @@ kotlin {
         androidMain.dependencies {
             implementation(libs.androidx.activity.compose)
             implementation(libs.ktor.client.okhttp)
+            // Вход через Яндекс ID: нативный экран, токен приходит в приложение.
+            implementation(libs.yandex.authsdk)
         }
     }
 }
@@ -88,6 +90,16 @@ android {
             .orElse("http://10.0.2.2:8080")
             .get()
         buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
+
+        // ClientID приложения Яндекс OAuth. Не секрет: он попадает в манифест
+        // (LoginSDK берёт его оттуда) и в APK. Пусто — кнопка входа через Яндекс
+        // не показывается, остальной вход работает как раньше.
+        // Источники: -Pcoffeely.yandexClientId, mobile/local.properties или env CI.
+        val yandexClientId = providers.gradleProperty("coffeely.yandexClientId").orNull
+            ?.takeIf { it.isNotBlank() }
+            ?: signingValue("coffeely.yandexClientId", "COFFEELY_YANDEX_CLIENT_ID").orEmpty()
+        manifestPlaceholders["YANDEX_CLIENT_ID"] = yandexClientId
+        buildConfigField("String", "YANDEX_CLIENT_ID", "\"$yandexClientId\"")
     }
 
     signingConfigs {

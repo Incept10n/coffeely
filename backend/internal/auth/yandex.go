@@ -83,31 +83,57 @@ func (y *Yandex) Callback(ctx context.Context, code, state string) (yandexID, em
 		return "", "", fmt.Errorf("yandex token: ответ без access_token: %w", err)
 	}
 
-	infoReq, err := http.NewRequestWithContext(ctx, http.MethodGet, y.cfg.YandexInfoURL, nil)
+	yandexID, email, _, err = y.info(ctx, tokenResp.AccessToken)
+	return yandexID, email, err
+}
+
+// Profile проверяет OAuth-токен, который LoginSDK выдал приложению на устройстве,
+// и возвращает пользователя Яндекса. client_id сверяется с нашим: токен,
+// выпущенный другому приложению, не должен открывать сессию в coffeely.
+func (y *Yandex) Profile(ctx context.Context, token string) (yandexID, email string, err error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", "", fmt.Errorf("пустой токен")
+	}
+	id, mail, clientID, err := y.info(ctx, token)
 	if err != nil {
 		return "", "", err
 	}
-	infoReq.Header.Set("Authorization", "Bearer "+tokenResp.AccessToken)
+	if clientID != y.cfg.YandexClientID {
+		return "", "", fmt.Errorf("токен выдан другому приложению (%q)", clientID)
+	}
+	return id, mail, nil
+}
+
+// info меняет OAuth-токен на профиль: id, email и client_id, для которого
+// токен выдан. Yandex ждёт схему авторизации «OAuth», не «Bearer».
+func (y *Yandex) info(ctx context.Context, accessToken string) (yandexID, email, clientID string, err error) {
+	infoReq, err := http.NewRequestWithContext(ctx, http.MethodGet, y.cfg.YandexInfoURL+"?format=json", nil)
+	if err != nil {
+		return "", "", "", err
+	}
+	infoReq.Header.Set("Authorization", "OAuth "+accessToken)
 	infoResp, err := y.http.Do(infoReq)
 	if err != nil {
-		return "", "", fmt.Errorf("yandex info: %w", err)
+		return "", "", "", fmt.Errorf("yandex info: %w", err)
 	}
 	defer infoResp.Body.Close()
 	if infoResp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(infoResp.Body, 4096))
-		return "", "", fmt.Errorf("yandex info: статус %d: %s", infoResp.StatusCode, body)
+		return "", "", "", fmt.Errorf("yandex info: статус %d: %s", infoResp.StatusCode, body)
 	}
 	var info struct {
 		ID           string `json:"id"`
 		DefaultEmail string `json:"default_email"`
+		ClientID     string `json:"client_id"`
 	}
 	if err := json.NewDecoder(infoResp.Body).Decode(&info); err != nil {
-		return "", "", fmt.Errorf("yandex info: %w", err)
+		return "", "", "", fmt.Errorf("yandex info: %w", err)
 	}
 	if info.ID == "" || info.DefaultEmail == "" {
-		return "", "", fmt.Errorf("yandex info: нет id или email")
+		return "", "", "", fmt.Errorf("yandex info: нет id или email")
 	}
-	return info.ID, info.DefaultEmail, nil
+	return info.ID, info.DefaultEmail, info.ClientID, nil
 }
 
 // takeState проверяет и съедает state (одноразовость + TTL).

@@ -20,8 +20,8 @@
 ## Ролевая модель (v2, 2026-11-16)
 
 - **Приложение = клиент + бариста.** Роли owner в приложении нет: `/auth/register` создаёт
-  только клиента; `/auth/login` для owner → 403 `owner_site_only`; Yandex-связка owner →
-  409 `yandex_owner`. Бариста входит с аккаунтом, созданным владельцем.
+  только клиента; `/auth/login` для owner → 403 `owner_site_only`; Yandex-связка
+  owner → 409 `yandex_owner`, бариста → 409 `yandex_barista` (Яндекс — только клиенты).
 - **Сайт = владелец.** Регистрация бесплатна `/owner/register` (`POST /owners/register`),
   кабинет `/owner` (SPA-роуты лендинга): тарифы 1500/2500/4900 ₽/мес, свои точки
   (`/admin/points`), рабочие аккаунты бариста (`/admin/baristas`, привязка к точке).
@@ -60,6 +60,26 @@
 Правила работы с базой: одна логическая единица = одна задача; запись в базу — только после показа
 пользователю полного текста и его явного «да»; индекс `AIK-2` обновляется тем же ходом.
 
+## Вход через Яндекс ID (мобильное приложение)
+
+- Android: официальный LoginSDK `com.yandex.android:authsdk:3.1.3` (androidMain,
+  подключается в `composeApp/build.gradle.kts`). ClientID попадает в манифест через
+  `manifestPlaceholders["YANDEX_CLIENT_ID"]` из Gradle-проперти
+  `coffeely.yandexClientId`, `mobile/local.properties` или env
+  `COFFEELY_YANDEX_CLIENT_ID` (CI). Пусто — кнопки входа через Яндекс нет.
+- Флоу: LoginSDK в приложении → OAuth-токен → `POST /auth/yandex/token` →
+  `login.yandex.ru/info` с заголовком `OAuth <token>` (не `Bearer`) → сверка
+  `client_id` с нашим (иначе чужой токен открыл бы сессию) → `LoginYandex`
+  (связка по email; новые — клиенты, email считается подтверждённым).
+- `GET /auth/providers` → `{"yandex":true|false}`: приложение показывает кнопку
+  только когда сервер настроен (`YANDEX_CLIENT_ID` задан).
+- Яндекс — только клиенты: owner → 409 `yandex_owner`, бариста → 409 `yandex_barista`
+  (роль проверяется и по уже связанному `yandex_id`).
+- Web-флоу `/auth/yandex/start|callback` оставлен для будущего входа с сайта, но
+  приложением не используется и в проде ненадёжен: `state` хранится в памяти пода,
+  а реплик две. Перед использованием — перевести state в Postgres.
+- В логах `code`, `state`, `token`, `oauth_token`, `access_token` маскируются.
+
 ## Правила работы
 
 - **Код пишет агент.** Не планировать работу по часам — работать вехами (см. `docs/PLAN.md`).
@@ -93,7 +113,8 @@
   и APK в S3 (`https://s3.inceptech.ru/coffeely/coffeely.apk`). Секреты репозитория:
   `DOCKER_USERNAME`, `DOCKER_PASSWORD`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`,
   `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`,
-  `ANDROID_KEY_PASSWORD`.
+  `ANDROID_KEY_PASSWORD`. Переменная репозитория `COFFEELY_YANDEX_CLIENT_ID` —
+  ClientID Яндекс OAuth (не секрет); без неё APK собирается без кнопки «Войти с Яндексом».
 - APK собирается `assembleRelease` и подписывается **одним стабильным ключом**
   `coffeely` (SHA-256 `66:2E:4A:E3:E5:74:14:FB:52:64:5B:36:2B:78:BB:FB:7D:2C:DB:35:F6:90:1D:ED:EE:56:F9:66:B8:4F:8C:70`,
   до 2054). Ключ: `~/.android-keys/coffeely/` (вне репо, бэкапить!) и одноимённые
@@ -105,9 +126,10 @@
   `apps/coffeely`) тянет мутабельные теги с `imagePullPolicy: Always`; после нового
   образа нужен `kubectl rollout restart deployment/backend -n coffeely`.
 - Секреты прода — OpenBao `secret/coffeely` (`password`, `jwt_secret`,
-  `admin_crm_secret`, `mail_password`) → ExternalSecret собирает `DATABASE_URL`,
-  `POSTGRES_PASSWORD`, `JWT_SECRET`, `ADMIN_CRM_SECRET`, `MAIL_PASSWORD` в
-  `coffeely-secrets`. `mail_password` — пароль ящика `coffeely@inceptech.ru` для
+  `admin_crm_secret`, `mail_password`, `yandex_client_id`, `yandex_client_secret`) →
+  ExternalSecret собирает `DATABASE_URL`, `POSTGRES_PASSWORD`, `JWT_SECRET`,
+  `ADMIN_CRM_SECRET`, `MAIL_PASSWORD`, `YANDEX_CLIENT_ID`, `YANDEX_CLIENT_SECRET`
+  в `coffeely-secrets`. `mail_password` — пароль ящика `coffeely@inceptech.ru` для
   EWS/NTLM; без него backend в prod не стартует (подтверждение email обязательно).
   При добавлении любого ключа сначала записать его в OpenBao, потом обновлять
   ExternalSecret/Deployment — иначе синк упадёт на отсутствующем ключе.
@@ -140,6 +162,9 @@ Exchange EWS (NTLM), вход открывается после `/auth/verify-em
 только HMAC-хешем, попытки и интервалы повторной отправки ограничены.
 Тема приложения выбирается пользователем (системная/светлая/тёмная) и
 сохраняется на устройстве.
+Вход через Яндекс ID добавлен в приложение вторым способом: Yandex LoginSDK на
+устройстве → `POST /auth/yandex/token` → сессия coffeely; через Яндекс входят
+только клиенты (owner/бариста → 409).
 Коммит и push — только по явной команде пользователя, затем CI и рестарт
 `deployment backend` / `deployment frontend` (`-n coffeely`) руками пользователя.
 

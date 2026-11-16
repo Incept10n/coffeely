@@ -24,6 +24,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,6 +41,8 @@ import com.coffeely.mobile.api.AuthResponse
 import com.coffeely.mobile.api.TokenStore
 import com.coffeely.mobile.api.UserDto
 import com.coffeely.mobile.ui.ThemeModeButton
+import com.coffeely.mobile.ui.YandexSignInButton
+import com.coffeely.mobile.ui.YandexSignInResult
 import kotlinx.coroutines.launch
 
 // Вход/регистрация через реальный API бэкенда (M2): email+пароль, argon2id.
@@ -61,6 +64,15 @@ fun LoginScreen(api: ApiClient, onLoggedIn: (UserDto) -> Unit) {
     var verifyTarget by remember { mutableStateOf<String?>(null) }
     var verifyNotice by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+
+    // Вход через Яндекс ID: кнопка есть только если сервер его настроил
+    // (YANDEX_CLIENT_ID задан), иначе вход остаётся email+пароль.
+    var yandexAvailable by remember { mutableStateOf(false) }
+    var yandexBusy by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        api.authProviders().onSuccess { yandexAvailable = it.yandex }
+    }
 
     fun enter(resp: AuthResponse) {
         TokenStore.set(resp.tokens.access_token, resp.tokens.refresh_token)
@@ -115,6 +127,27 @@ fun LoginScreen(api: ApiClient, onLoggedIn: (UserDto) -> Unit) {
                 { error = it.message ?: "ошибка сети" },
             )
             busy = false
+        }
+    }
+
+    // Токен из LoginSDK меняем на сессию coffeely (сервер сам проверит его в Яндексе).
+    fun loginWithYandex(token: String) {
+        scope.launch {
+            yandexBusy = true
+            error = null
+            api.loginWithYandex(token).fold(
+                { resp -> enter(resp) },
+                { e ->
+                    error = when {
+                        e is ApiException && e.code == "yandex_barista" ->
+                            "Вход через Яндекс — только для клиентов. Бариста входит по email и паролю, который выдал владелец."
+                        e is ApiException && e.code == "yandex_owner" ->
+                            "Владельцу — в личный кабинет на сайте."
+                        else -> e.message ?: "ошибка сети"
+                    }
+                },
+            )
+            yandexBusy = false
         }
     }
 
@@ -177,6 +210,24 @@ fun LoginScreen(api: ApiClient, onLoggedIn: (UserDto) -> Unit) {
                         enabled = email.isNotBlank() && password.length >= 8,
                     ) {
                         Text("Войти")
+                    }
+                    // Яндекс ID — дополнительный способ: кнопка появляется, когда
+                    // сервер сообщил, что он настроен. Токен выдаёт LoginSDK.
+                    if (yandexAvailable) {
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            "или",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        YandexSignInButton(enabled = !yandexBusy) { result ->
+                            when (result) {
+                                is YandexSignInResult.Success -> loginWithYandex(result.token)
+                                is YandexSignInResult.Failure -> error = result.message
+                                YandexSignInResult.Cancelled -> Unit
+                            }
+                        }
                     }
                     // Всегда активна: пустые поля — не повод блокировать переход
                     // к регистрации, окно само покажет, что нужно заполнить.

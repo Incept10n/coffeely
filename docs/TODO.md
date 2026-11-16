@@ -28,7 +28,9 @@
 
 ## Технический долг / следующие шаги (не блокеры)
 
-- [ ] Мобилка: Yandex ID в приложении (сейчас только email+пароль).
+- [x] Мобилка: Yandex ID в приложении (LoginSDK → `POST /auth/yandex/token`,
+      кнопка появляется по `GET /auth/providers`; ClientID — переменная CI
+      `COFFEELY_YANDEX_CLIENT_ID`).
 - [ ] Мобилка: подписанный release-APK + версионирование (`versionCode` из CI).
 - [ ] FCM-пуши о готовности заказа (сейчас WS + поллинг на экране).
 - [ ] Realtime: заменить самописный Hub на Centrifugo при росте нагрузки (PLAN).

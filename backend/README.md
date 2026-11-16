@@ -45,8 +45,9 @@ go run ./cmd/migrate drop   # снести всё (только dev!)
 | `JWT_SECRET` | dev-дефолт | секрет HS256 access-токенов |
 | `ACCESS_TOKEN_TTL` | `15m` | срок жизни access-токена |
 | `REFRESH_TOKEN_TTL` | `720h` | срок жизни refresh-токена (30 дней) |
-| `YANDEX_CLIENT_ID` / `YANDEX_CLIENT_SECRET` | пусто | OAuth2 Yandex ID |
-| `YANDEX_REDIRECT_URL` | `http://localhost:8080/auth/yandex/callback` | callback OAuth |
+| `YANDEX_CLIENT_ID` | пусто | ClientID приложения Яндекс OAuth; пусто — вход через Яндекс выключен (`/auth/providers` → `false`) |
+| `YANDEX_CLIENT_SECRET` | пусто | Client secret (нужен серверному web-флоу и проверке JWT; для `POST /auth/yandex/token` не используется) |
+| `YANDEX_REDIRECT_URL` | `http://localhost:8080/auth/yandex/callback` | callback OAuth (web-флоу) |
 | `ADMIN_CRM_SECRET` | пусто | строка входа во внутреннюю админку `/admin`; пусто — админка выключена (503) |
 | `MAIL_EWS_URL` | `https://mail.inceptech.ru/EWS/Exchange.asmx` | EWS-эндпоинт Exchange |
 | `MAIL_USERNAME` | `coffeely@inceptech.ru` | ящик для NTLM-авторизации в Exchange |
@@ -64,7 +65,9 @@ go run ./cmd/migrate drop   # снести всё (только dev!)
 Каждый входящий запрос пишется в stdout одной JSON-строкой (`slog`, middleware
 `httpx.LogRequests`): `method`, `path`, `status`, `bytes`, `duration_ms`, `remote`,
 `user_agent`, `request_id`. 4xx — WARN, 5xx — ERROR. `X-Request-Id` принимается от
-клиента (nginx) или генерируется и возвращается в ответе.
+клиента (nginx) или генерируется и возвращается в ответе. Значения `code`, `state`,
+`token`, `access_token`, `oauth_token` в query маскируются (`***`): одноразовые
+OAuth-коды и токены не должны попадать в логи.
 
 ## API
 
@@ -77,8 +80,10 @@ go run ./cmd/migrate drop   # снести всё (только dev!)
 | POST | `/auth/refresh` | все | ротация refresh: старый отзывается, выдаётся новый; повторное использование отзывает всю сессию |
 | POST | `/auth/logout` | все | отзывает refresh-токен |
 | GET | `/auth/me` | Bearer | текущий пользователь (id, email, роль) |
-| GET | `/auth/yandex/start` | все | редирект на Yandex ID |
-| GET | `/auth/yandex/callback` | все | вход/регистрация по Yandex ID, связка по email |
+| GET | `/auth/yandex/start` | все | редирект на Yandex ID (web-флоу, приложением не используется) |
+| GET | `/auth/yandex/callback` | все | вход/регистрация по Yandex ID, связка по email (web-флоу) |
+| POST | `/auth/yandex/token` | все | `{token}` из LoginSDK → проверка через `login.yandex.ru/info` (в т.ч. `client_id`) → access+refresh. Только клиенты: owner → 409 `yandex_owner`, бариста → 409 `yandex_barista` |
+| GET | `/auth/providers` | все | какие способы входа настроены: `{"yandex": true/false}` |
 | GET | `/points` | Bearer | активные точки + загрузка: `load.wait_seconds`, `load.active_orders`, `load.is_open`, `load.opens_at` |
 | GET | `/points/{id}/menu` | Bearer | меню точки (цена, `prep_seconds`) |
 | POST | `/orders` | Bearer | создать заказ: `{point_id, items[]}`. **Окно не передаётся** — его назначает движок ёмкости |
@@ -147,7 +152,8 @@ go run ./cmd/migrate drop   # снести всё (только dev!)
 окно переносится на следующее открытие.
 
 E2E-тесты (`go test ./...`) гоняют все флоу против тестовой БД `coffeely_test`
-(пересоздаётся с нуля); Yandex ID — против mock-OIDC. Без доступного Postgres тесты скипаются.
+(пересоздаётся с нуля); Yandex ID — против mock-OIDC (и web-флоу, и вход по токену
+LoginSDK). Без доступного Postgres тесты скипаются.
 
 ## Бутстрап точки (dev и пилот)
 

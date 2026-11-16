@@ -67,6 +67,13 @@ class ApiClient(baseUrl: String = platformApiBaseUrl()) {
 
     suspend fun me(): Result<UserDto> = runCatching { getJson("/auth/me") }
 
+    // Яндекс ID как дополнительный способ входа: токен приходит из LoginSDK.
+    suspend fun authProviders(): Result<ProvidersResponse> = runCatching { getJson("/auth/providers") }
+
+    suspend fun loginWithYandex(token: String): Result<AuthResponse> = runCatching {
+        postJson("/auth/yandex/token", YandexTokenRequest(token))
+    }
+
     suspend fun logout(refreshToken: String): Result<Unit> = runCatching {
         val resp = client.post("$base/auth/logout") {
             contentType(ContentType.Application.Json)

@@ -90,7 +90,16 @@ func newTestEnv(t *testing.T) *testEnv {
 		case "/token":
 			_, _ = w.Write([]byte(`{"access_token":"mock-yandex-token"}`))
 		case "/info":
-			_, _ = w.Write([]byte(fmt.Sprintf(`{"id":"ya-user-1","default_email":%q}`, mockEmail)))
+			// Токен «чужого» приложения: client_id не наш → сервер обязан отказать.
+			clientID := "test-client-id"
+			if r.Header.Get("Authorization") == "OAuth foreign-token" {
+				clientID = "other-client-id"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"id":            "ya-user-1",
+				"default_email": mockEmail,
+				"client_id":     clientID,
+			})
 		default:
 			http.NotFound(w, r)
 		}
@@ -296,6 +305,93 @@ func TestYandexE2E(t *testing.T) {
 	}
 	if id1, id2 := body["user"].(map[string]any)["id"], body2["user"].(map[string]any)["id"]; id1 != id2 {
 		t.Fatalf("yandex: создан второй пользователь вместо входа: %v vs %v", id1, id2)
+	}
+}
+
+// Тест: вход через LoginSDK (мобильное приложение). Приложение приносит
+// OAuth-токен, сервер проверяет его через login.yandex.ru/info и выдаёт свою сессию.
+func TestYandexSdkE2E(t *testing.T) {
+	e := newTestEnv(t)
+	e.srv = httptest.NewServer(e.handler)
+	t.Cleanup(e.srv.Close)
+	ctx := context.Background()
+
+	// провайдер включён — приложение покажет кнопку «Войти с Яндексом»
+	status, body := e.doJSON(t, "GET", "/auth/providers", "", nil)
+	if status != http.StatusOK || body["yandex"] != true {
+		t.Fatalf("providers: %d %v", status, body)
+	}
+
+	// пустой токен
+	if status, _ := e.doJSON(t, "POST", "/auth/yandex/token", "", map[string]string{"token": "  "}); status != http.StatusBadRequest {
+		t.Fatalf("пустой токен: ждём 400, получили %d", status)
+	}
+
+	// токен, выданный другому приложению (client_id не совпал)
+	if status, _ := e.doJSON(t, "POST", "/auth/yandex/token", "", map[string]string{"token": "foreign-token"}); status != http.StatusUnauthorized {
+		t.Fatalf("чужой client_id: ждём 401, получили %d", status)
+	}
+
+	// успешный вход: клиент создан, токены рабочие
+	status, body = e.doJSON(t, "POST", "/auth/yandex/token", "", map[string]string{"token": "mock-sdk-token"})
+	if status != http.StatusOK {
+		t.Fatalf("yandex token: статус %d: %v", status, body)
+	}
+	user, _ := body["user"].(map[string]any)
+	if user["email"] != mockEmail || user["role"] != "client" {
+		t.Fatalf("yandex token: неверный пользователь: %v", body["user"])
+	}
+	firstID, _ := user["id"].(string)
+	access, _ := tokensFrom(t, body)
+	if status, _ := e.doJSON(t, "GET", "/auth/me", access, nil); status != http.StatusOK {
+		t.Fatalf("me после входа через Яндекс: ждём 200, получили %d", status)
+	}
+
+	// повторный вход тем же yandex_id → та же учётка
+	status, body = e.doJSON(t, "POST", "/auth/yandex/token", "", map[string]string{"token": "mock-sdk-token"})
+	if status != http.StatusOK {
+		t.Fatalf("yandex token 2: статус %d: %v", status, body)
+	}
+	second, _ := body["user"].(map[string]any)
+	if id, _ := second["id"].(string); id != firstID {
+		t.Fatalf("yandex: создан второй пользователь вместо входа: %v vs %v", firstID, id)
+	}
+
+	// Яндекс — только для клиентов. Роль проверяется и по yandex_id: клиент мог
+	// быть связан раньше и потом стать баристой/владельцем.
+	for _, tc := range []struct {
+		role, code string
+	}{
+		{"barista", "yandex_barista"},
+		{"owner", "yandex_owner"},
+	} {
+		if _, err := e.pool.Exec(ctx, `UPDATE users SET role = $2::user_role WHERE id = $1`, firstID, tc.role); err != nil {
+			t.Fatalf("update role %s: %v", tc.role, err)
+		}
+		status, body := e.doJSON(t, "POST", "/auth/yandex/token", "", map[string]string{"token": "mock-sdk-token"})
+		if status != http.StatusConflict {
+			t.Fatalf("%s через Яндекс: ждём 409, получили %d (%v)", tc.role, status, body)
+		}
+		if body["code"] != tc.code {
+			t.Fatalf("%s через Яндекс: код ошибки %v, ждём %s", tc.role, body["code"], tc.code)
+		}
+	}
+}
+
+// Тест: без YANDEX_CLIENT_ID вход через Яндекс выключен, приложение прячет кнопку.
+func TestYandexDisabledE2E(t *testing.T) {
+	e := newTestEnv(t)
+	cfg := e.cfg
+	cfg.YandexClientID = ""
+	e.srv = httptest.NewServer(New(e.pool, cfg))
+	t.Cleanup(e.srv.Close)
+
+	status, body := e.doJSON(t, "GET", "/auth/providers", "", nil)
+	if status != http.StatusOK || body["yandex"] != false {
+		t.Fatalf("providers без ClientID: %d %v", status, body)
+	}
+	if status, _ := e.doJSON(t, "POST", "/auth/yandex/token", "", map[string]string{"token": "mock-sdk-token"}); status != http.StatusServiceUnavailable {
+		t.Fatalf("токен без ClientID: ждём 503, получили %d", status)
 	}
 }
 

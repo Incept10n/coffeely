@@ -284,6 +284,9 @@ func (s *Service) Logout(ctx context.Context, refreshToken string) error {
 //  1. есть пользователь с этим yandex_id — вход;
 //  2. есть пользователь с этим email без yandex_id — привязываем и входим;
 //  3. пользователя нет — регистрируем клиента с yandex_id.
+//
+// Яндекс — дополнительный способ входа только для клиентов приложения:
+// владелец (owner) и бариста получают 409 и входят по паролю.
 func (s *Service) LoginYandex(ctx context.Context, yandexID, email string) (User, TokenPair, error) {
 	if yandexID == "" || email == "" {
 		return User{}, TokenPair{}, httpx.NewError(400, "yandex_profile", "Yandex не вернул id/email")
@@ -294,27 +297,37 @@ func (s *Service) LoginYandex(ctx context.Context, yandexID, email string) (User
 	if err != nil {
 		return User{}, TokenPair{}, err
 	}
+	linkNeeded := false
 	if !found {
 		existing, ok, err := s.store.FindByEmail(ctx, email)
 		if err != nil {
 			return User{}, TokenPair{}, err
 		}
-		switch {
-		case !ok:
+		if ok {
+			// Уже есть аккаунт с этим email — свяжем его с Яндексом (после
+			// проверки роли), чтобы пароль и Яндекс вели в одну учётку.
+			user = existing
+			linkNeeded = true
+		} else {
 			user, err = s.store.CreateUser(ctx, email, "client", "", yandexID, true)
 			if err != nil {
 				return User{}, TokenPair{}, err
 			}
-		case existing.Role == "owner":
-			// Владелец не входит в приложение и не связывается через Yandex ID —
-			// кабинет только по email+пароль на сайте.
-			return User{}, TokenPair{}, httpx.NewError(409, "yandex_owner", "аккаунт владельца не связывается через Yandex ID")
-		default:
-			if err := s.store.LinkYandex(ctx, existing.ID, yandexID); err != nil {
-				return User{}, TokenPair{}, err
-			}
-			user = existing
-			user.Role = existing.Role
+		}
+	}
+
+	// Роль проверяется всегда, а не только при первой привязке: аккаунт мог быть
+	// связан клиентом и позже стать баристой. Яндекс — вход только для клиентов.
+	switch {
+	case user.Role == "owner":
+		return User{}, TokenPair{}, errYandexOwner
+	case user.Role != "client":
+		return User{}, TokenPair{}, errYandexBarista
+	}
+
+	if linkNeeded {
+		if err := s.store.LinkYandex(ctx, user.ID, yandexID); err != nil {
+			return User{}, TokenPair{}, err
 		}
 	}
 
@@ -324,6 +337,12 @@ func (s *Service) LoginYandex(ctx context.Context, yandexID, email string) (User
 	}
 	return user, pair, nil
 }
+
+// Ошибки ролей для входа через Яндекс: способ дополнительный и только для клиентов.
+var (
+	errYandexOwner   = httpx.NewError(409, "yandex_owner", "аккаунт владельца не связывается через Yandex ID")
+	errYandexBarista = httpx.NewError(409, "yandex_barista", "вход через Яндекс — только для клиентов; бариста входит по email и паролю")
+)
 
 // issuePair — access + свежий refresh в БД.
 func (s *Service) issuePair(ctx context.Context, user User) (TokenPair, error) {

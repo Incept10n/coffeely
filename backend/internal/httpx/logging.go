@@ -38,7 +38,7 @@ func LogRequests(next http.Handler) http.Handler {
 			"request_id", requestID,
 		}
 		if q := r.URL.RawQuery; q != "" {
-			attrs = append(attrs, "query", q)
+			attrs = append(attrs, "query", redactQuery(q))
 		}
 		if ua := r.UserAgent(); ua != "" {
 			attrs = append(attrs, "user_agent", ua)
@@ -53,6 +53,28 @@ func LogRequests(next http.Handler) http.Handler {
 		}
 		slog.Log(r.Context(), level, "http request", attrs...)
 	})
+}
+
+// sensitiveQuery — параметры, которые не должны попадать в логи: одноразовые
+// OAuth-коды, state и токены. Имя параметра остаётся (удобно для отладки),
+// значение маскируется.
+var sensitiveQuery = map[string]bool{
+	"code":         true,
+	"state":        true,
+	"token":        true,
+	"oauth_token":  true,
+	"access_token": true,
+}
+
+func redactQuery(raw string) string {
+	parts := strings.Split(raw, "&")
+	for i, part := range parts {
+		key, _, hasValue := strings.Cut(part, "=")
+		if hasValue && sensitiveQuery[strings.ToLower(key)] {
+			parts[i] = key + "=***"
+		}
+	}
+	return strings.Join(parts, "&")
 }
 
 // statusRecorder запоминает статус и число байт ответа.
