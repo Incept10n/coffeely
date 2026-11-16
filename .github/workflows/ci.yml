@@ -7,6 +7,9 @@ name: CI — build & push
 # Требуемые секреты репозитория:
 #   DOCKER_USERNAME, DOCKER_PASSWORD  — Docker Hub (incept1on)
 #   S3_ACCESS_KEY, S3_SECRET_KEY      — S3 seaweedfs (https://s3.inceptech.ru)
+#   ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD,
+#   ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD — стабильный ключ подписи APK
+#   (иначе обновление поверх установленного приложения невозможно)
 #
 # APK публикуется в бакет `coffeely`: стабильная ссылка /coffeely/coffeely.apk
 # (её использует лендинг) + версия с коротким sha в /coffeely/builds/.
@@ -130,19 +133,47 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Сборка APK (прод-адрес API)
-        working-directory: mobile
+      - name: Ключ подписи (стабильный, из секретов)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
-          ./gradlew :composeApp:assembleDebug \
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::нет секрета ANDROID_KEYSTORE_BASE64 — без него APK нельзя обновить поверх установленного"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/keystore"
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keystore/coffeely-release.jks"
+
+      - name: Сборка APK (прод-адрес API, release-подпись)
+        working-directory: mobile
+        env:
+          COFFEELY_STORE_FILE: ${{ runner.temp }}/keystore/coffeely-release.jks
+          COFFEELY_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          COFFEELY_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          COFFEELY_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          ./gradlew :composeApp:assembleRelease \
             -Pcoffeely.apiBaseUrl="${API_BASE_URL}" \
             --no-daemon --stacktrace
+
+      - name: Проверка подписи
+        run: |
+          APK=mobile/composeApp/build/outputs/apk/release/composeApp-release.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$APK" \
+            | grep -E "certificate (DN|SHA-256)"
+          # Один и тот же отпечаток обязателен: иначе телефон откажется
+          # обновлять установленное приложение (package conflicts with an existing package).
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$APK" \
+            | grep -qi "662e4ae3e57414fb52645b362b78bbfb7d2cdb35f6901dedee56f966b84f8c70" \
+            || { echo "::error::подпись APK не совпадает с ключом coffeely"; exit 1; }
 
       - name: Подготовка артефакта
         run: |
           mkdir -p dist
           SHORT_SHA="$(git rev-parse --short=12 HEAD)"
-          cp mobile/composeApp/build/outputs/apk/debug/composeApp-debug.apk "dist/coffeely-${SHORT_SHA}.apk"
-          cp mobile/composeApp/build/outputs/apk/debug/composeApp-debug.apk dist/coffeely.apk
+          APK=mobile/composeApp/build/outputs/apk/release/composeApp-release.apk
+          cp "$APK" "dist/coffeely-${SHORT_SHA}.apk"
+          cp "$APK" dist/coffeely.apk
           ls -la dist
 
       - name: Upload в S3

@@ -77,7 +77,16 @@
 - CI (`.github/workflows/ci.yml`) только собирает и пушит: Docker-образы
   `incept1on/coffeely-backend:backend`, `incept1on/coffeely-landing:front` в Docker Hub
   и APK в S3 (`https://s3.inceptech.ru/coffeely/coffeely.apk`). Секреты репозитория:
-  `DOCKER_USERNAME`, `DOCKER_PASSWORD`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`.
+  `DOCKER_USERNAME`, `DOCKER_PASSWORD`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`,
+  `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`,
+  `ANDROID_KEY_PASSWORD`.
+- APK собирается `assembleRelease` и подписывается **одним стабильным ключом**
+  `coffeely` (SHA-256 `66:2E:4A:E3:E5:74:14:FB:52:64:5B:36:2B:78:BB:FB:7D:2C:DB:35:F6:90:1D:ED:EE:56:F9:66:B8:4F:8C:70`,
+  до 2054). Ключ: `~/.android-keys/coffeely/` (вне репо, бэкапить!) и одноимённые
+  секреты в GitHub; локально — `mobile/local.properties` (см. `mobile/README.md`).
+  **Не менять ключ и не собирать отдаваемый APK debug-ключом** — иначе у всех
+  «app not installed as package conflicts with an existing package» и удаление
+  приложения с потерей данных. `versionCode` = число коммитов в `HEAD`.
 - В кластер ничего не деплоим из этого репо. ArgoCD (репозиторий `Incept10n/inceptech`,
   `apps/coffeely`) тянет мутабельные теги с `imagePullPolicy: Always`; после нового
   образа нужен `kubectl rollout restart deployment/backend -n coffeely`.

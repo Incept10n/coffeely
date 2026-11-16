@@ -56,6 +56,41 @@ cd mobile
 # результат: mobile/composeApp/build/outputs/apk/debug/composeApp-debug.apk
 ```
 
+## Подпись и обновления (важно)
+
+Любая сборка — и CI, и локальная — подписывается **одним** ключом `coffeely`
+(RSA 4096, `CN=coffeely, O=Inceptech, OU=mobile, C=RU`,
+SHA-256 `66:2E:4A:E3:...:4F:8C:70`, годен до 2054).
+Иначе Android на обновлении говорит «app not installed as package conflicts with
+an existing package»: подпись не совпала, и приложение надо удалять целиком.
+Именно это и происходило, пока CI собирал `assembleDebug` — на каждом раннере
+генерировался новый debug-ключ.
+
+Ключ и пароли лежат **вне репозитория**: `~/.android-keys/coffeely/`
+(`coffeely-release.jks` + `keystore.env`, права 600). Бэкап этого каталога обязателен:
+потеря ключа = потеря возможности обновлять приложение у пользователей.
+В CI те же данные — в секретах репозитория `ANDROID_KEYSTORE_BASE64`,
+`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`.
+
+Локально ключ подключается через `mobile/local.properties` (в `.gitignore`):
+
+```
+sdk.dir=/opt/android-sdk
+coffeely.storeFile=/home/incept1on/.android-keys/coffeely/coffeely-release.jks
+coffeely.storePassword=…
+coffeely.keyAlias=coffeely
+coffeely.keyPassword=…
+```
+
+Без этих строк сборка тоже пройдёт, но подпишется debug-ключом машины — такой APK
+не обновится поверх APK с лендинга.
+
+`versionCode` считается как число коммитов в `HEAD`, `versionName` — `0.1.0+<sha>`,
+поэтому обновление проходит как обычное обновление, без сюрпризов с даунгрейдом.
+
+Переход на новый ключ (или смена ключа вообще) требует **один раз** удалить
+приложение на устройстве — дальше обновления идут поверх.
+
 ### Адрес API на сборке
 
 Адрес зашивается в `BuildConfig.API_BASE_URL` (Gradle property `coffeely.apiBaseUrl`):
