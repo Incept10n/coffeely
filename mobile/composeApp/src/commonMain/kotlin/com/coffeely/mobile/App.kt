@@ -3,6 +3,7 @@ package com.coffeely.mobile
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -58,17 +59,23 @@ fun App() {
     }
 
     CoffeelyTheme {
-        val current = user
-        when {
-            booting -> Surface(Modifier.fillMaxSize()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        // Фон тянем на всё окно, включая полосы статуса и навигации: системные панели
+        // прозрачные (edge-to-edge), цвет под ними берётся отсюда — крем или тёмный,
+        // без белой полосы под тремя кнопками Android.
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background,
+        ) {
+            val current = user
+            when {
+                booting -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
-            }
 
-            current == null -> LoginScreen(api) { user = it }
-            current.role == "barista" -> BaristaScreen(api, onLogout = ::logout)
-            else -> ClientFlow(api, onLogout = ::logout)
+                current == null -> LoginScreen(api) { user = it }
+                current.role == "barista" -> BaristaScreen(api, onLogout = ::logout)
+                else -> ClientFlow(api, onLogout = ::logout)
+            }
         }
     }
 }

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -23,6 +24,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -226,39 +228,49 @@ private fun PointScreen(
         },
         bottomBar = {
             if (totalItems > 0) {
-                Row(
-                    Modifier.fillMaxWidth().padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                // Отдельная поверхность + навбар-инсет: при edge-to-edge три кнопки
+                // Android больше не ложатся поверх цены и кнопки «Заказать».
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    tonalElevation = 3.dp,
                 ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("${totalMinor / 100} ₽", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            "оплата в кофейне при получении",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                    Button(
-                        onClick = {
-                            scope.launch {
-                                busy = true
-                                error = null
-                                api.createOrder(
-                                    point.id,
-                                    cart.entries.map { OrderItemRef(it.key, it.value) },
-                                ).fold({ onOrdered(it) }, { error = it.message })
-                                busy = false
-                            }
-                        },
-                        // Закрытая точка заказ не примет (сервер вернёт point_busy).
-                        enabled = !busy && point.load.is_open,
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            when {
-                                busy -> "Оформляем…"
-                                !point.load.is_open -> "Закрыто"
-                                else -> "Заказать"
+                        Column(Modifier.weight(1f)) {
+                            Text("${totalMinor / 100} ₽", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "оплата в кофейне при получении",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    busy = true
+                                    error = null
+                                    api.createOrder(
+                                        point.id,
+                                        cart.entries.map { OrderItemRef(it.key, it.value) },
+                                    ).fold({ onOrdered(it) }, { error = it.message })
+                                    busy = false
+                                }
                             },
-                        )
+                            // Закрытая точка заказ не примет (сервер вернёт point_busy).
+                            enabled = !busy && point.load.is_open,
+                        ) {
+                            Text(
+                                when {
+                                    busy -> "Оформляем…"
+                                    !point.load.is_open -> "Закрыто"
+                                    else -> "Заказать"
+                                },
+                            )
+                        }
                     }
                 }
             }

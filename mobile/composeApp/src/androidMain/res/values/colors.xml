@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Фон окна = цвет темы Compose (крем/тёмный кофе). -->
+    <color name="coffeely_cream">#FFF5EFE6</color>
+    <color name="coffeely_dark">#FF231B15</color>
+    <!-- Системные панели прозрачные: цвет под ними даёт контент приложения. -->
+    <color name="coffeely_transparent">#00000000</color>
+</resources>

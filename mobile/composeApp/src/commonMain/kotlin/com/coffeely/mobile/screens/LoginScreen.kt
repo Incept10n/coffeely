@@ -1,13 +1,19 @@
 package com.coffeely.mobile.screens
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -68,71 +74,87 @@ fun LoginScreen(api: ApiClient, onLoggedIn: (UserDto) -> Unit) {
         }
     }
 
-    Surface(modifier = Modifier.fillMaxSize()) {
-        Column(
+    // Фон — общий кремовый (а не белый): под прозрачными системными панелями видно
+    // именно его, поэтому полоса навигации больше не выделяется белым.
+    // safeDrawingPadding + imePadding: панели и клавиатура не перекрывают поля и кнопку,
+    // а на низком экране форма прокручивается вместо обрезки.
+    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
+                .safeDrawingPadding()
+                .imePadding(),
         ) {
-            Text("coffeely", style = MaterialTheme.typography.displaySmall)
-            Text(
-                "кофе к точному времени готовности",
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            Spacer(Modifier.height(32.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .heightIn(min = maxHeight)
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Text("coffeely", style = MaterialTheme.typography.displaySmall)
+                Text(
+                    "кофе к точному времени готовности",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Spacer(Modifier.height(32.dp))
 
-            OutlinedTextField(
-                value = email,
-                onValueChange = { email = it },
-                label = { Text("Email") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(12.dp))
-            OutlinedTextField(
-                value = password,
-                onValueChange = { password = it },
-                label = { Text("Пароль (мин. 8 символов)") },
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(16.dp))
+                OutlinedTextField(
+                    value = email,
+                    onValueChange = { email = it },
+                    label = { Text("Email") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("Пароль (мин. 8 символов)") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(16.dp))
 
-            if (busy) {
-                CircularProgressIndicator()
-            } else {
-                Button(
-                    onClick = { auth(email, password, register = false) },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = email.isNotBlank() && password.length >= 8,
-                ) {
-                    Text("Войти")
+                // Неактивная кнопка красится в цвет onSurface с прозрачностью; при
+                // кофейной схеме это тёплый оттенок, а не фиолетовая подсветка
+                // baseline Material 3.
+                if (busy) {
+                    CircularProgressIndicator()
+                } else {
+                    Button(
+                        onClick = { auth(email, password, register = false) },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = email.isNotBlank() && password.length >= 8,
+                    ) {
+                        Text("Войти")
+                    }
+                    // Всегда активна: пустые поля — не повод блокировать переход
+                    // к регистрации, окно само покажет, что нужно заполнить.
+                    TextButton(
+                        onClick = {
+                            error = null
+                            showRegister = true
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Регистрация нового клиента")
+                    }
                 }
-                // Всегда активна: пустые поля — не повод блокировать переход
-                // к регистрации, окно само покажет, что нужно заполнить.
-                TextButton(
-                    onClick = {
-                        error = null
-                        showRegister = true
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("Регистрация нового клиента")
-                }
-            }
-            if (!showRegister) {
-                error?.let {
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        it,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                if (!showRegister) {
+                    error?.let {
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                 }
             }
         }

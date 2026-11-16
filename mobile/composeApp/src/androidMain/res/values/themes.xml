@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Тема окна: кремовый фон вместо белого. Белый просвечивал сквозь прозрачные
+         системные панели (edge-to-edge) и под тремя кнопками навигации выглядел
+         чужеродной полосой. Иконки панелей переключает enableEdgeToEdge в MainActivity. -->
+    <style name="Theme.Coffeely" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/coffeely_cream</item>
+        <item name="android:statusBarColor">@color/coffeely_transparent</item>
+        <item name="android:navigationBarColor">@color/coffeely_transparent</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+    </style>
+</resources>

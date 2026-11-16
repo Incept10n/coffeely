@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Тёмная тема: тот же приём, фон окна = тёмный кофе из палитры Compose. -->
+    <style name="Theme.Coffeely" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/coffeely_dark</item>
+        <item name="android:statusBarColor">@color/coffeely_transparent</item>
+        <item name="android:navigationBarColor">@color/coffeely_transparent</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+    </style>
+</resources>
