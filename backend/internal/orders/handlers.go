@@ -174,12 +174,21 @@ func (h *Handlers) Queue(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, err)
 		return
 	}
+	// Архив дня (выданные/отменённые) — последняя секция KDS-борды.
+	history, err := h.store.HistoryOfPoint(r.Context(), pointID, 20)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
 	now := time.Now()
-	entries := make([]QueueEntry, len(orders))
-	for i, o := range orders {
+	entries := make([]QueueEntry, 0, len(orders)+len(history))
+	for _, o := range orders {
 		d := o.Deadline.Sub(now)
-		e := QueueEntry{Order: o, UntilDeadline: int64(d / time.Second), Urgency: urgency(d)}
-		entries[i] = e
+		entries = append(entries, QueueEntry{Order: o, UntilDeadline: int64(d / time.Second), Urgency: urgency(d)})
+	}
+	// Для закрытых заказов срочность не имеет смысла — поля пустые.
+	for _, o := range history {
+		entries = append(entries, QueueEntry{Order: o})
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"point_id": pointID, "orders": entries})
 }

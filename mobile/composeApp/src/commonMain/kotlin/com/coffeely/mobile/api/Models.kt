@@ -134,6 +134,17 @@ fun statusRu(status: String): String = when (status) {
 // Активные заказы — те, за которыми стоит следить.
 fun isActive(status: String): Boolean = status in setOf("created", "paid", "in_production", "ready")
 
+// Короткие подписи статусов для KDS-борды баристы: «на что ответил / на что нет»
+// читается с первого взгляда.
+fun statusKdsRu(status: String): String = when (status) {
+    "paid" -> "новый · нет ответа"
+    "in_production" -> "в работе"
+    "ready" -> "готов"
+    "given_out" -> "выдан"
+    "cancelled" -> "отменён"
+    else -> statusRu(status)
+}
+
 fun urgencyRu(urgency: String): String = when (urgency) {
     "overdue" -> "ПРОМАХ ДЕДЛАЙНА"
     "now" -> "делать сейчас"

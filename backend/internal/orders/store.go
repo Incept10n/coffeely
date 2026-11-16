@@ -262,6 +262,49 @@ func (s *Store) QueueOfPoint(ctx context.Context, pointID string) ([]Order, erro
 	return out, rows.Err()
 }
 
+// HistoryOfPoint — выданные и отменённые заказы точки за сегодня (в таймзоне
+// точки): архив дня для KDS-борды, чтобы бариста видел, что уже закрыто.
+// Точка отсчёта — событие смены статуса из журнала order_events.
+func (s *Store) HistoryOfPoint(ctx context.Context, pointID string, limit int) ([]Order, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT o.id, o.order_number, o.point_id, o.client_id, o.status,
+		       o.pickup_slot_start, o.pickup_slot_end, o.deadline_at, o.total_minor, o.created_at
+		FROM orders o
+		JOIN points p ON p.id = o.point_id
+		WHERE o.point_id = $1
+		  AND o.status IN ($2, $3)
+		  AND EXISTS (
+		      SELECT 1 FROM order_events ev
+		      WHERE ev.order_id = o.id AND ev.event = o.status::text
+		        AND (ev.at AT TIME ZONE p.timezone)::date
+		            = (now() AT TIME ZONE p.timezone)::date
+		  )
+		ORDER BY o.deadline_at DESC
+		LIMIT $4`,
+		pointID, StatusGivenOut, StatusCancelled, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("orders: history: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]Order, 0, limit)
+	for rows.Next() {
+		o, err := s.scanOrder(rows)
+		if err != nil {
+			return nil, err
+		}
+		if o.Items, err = s.items(ctx, o.ID); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
 // PointOfBarista — точка баристы (один бариста — одна точка).
 func (s *Store) PointOfBarista(ctx context.Context, userID string) (string, error) {
 	var pointID string

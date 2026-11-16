@@ -252,6 +252,80 @@ func TestRealtimeE2E(t *testing.T) {
 	}
 }
 
+// Тест: KDS-борда — категории по статусам: активные заказы со срочностью,
+// выданные и отменённые — в архиве дня без срочности.
+func TestKDSBoardE2E(t *testing.T) {
+	e := newTestEnv(t)
+	e.srv = httptest.NewServer(e.handler)
+	t.Cleanup(e.srv.Close)
+
+	pointID, menuA, _, baristaAccess, clientAccess := seedKDS(t, e)
+
+	// новый заказ остаётся в категории «нет ответа»
+	newOrder := makeOrder(t, e, clientAccess, pointID, menuA, "")
+
+	// заказ, который бариста отменит (первый ответ — отмена)
+	_, cancelResp := e.doJSON(t, "POST", "/orders", clientAccess, map[string]any{
+		"point_id": pointID,
+		"items":    []map[string]any{{"menu_item_id": menuA, "qty": 1}},
+	})
+	cancelledID := cancelResp["id"].(string)
+	if status, resp := e.doJSON(t, "POST", "/barista/orders/"+cancelledID+"/status", baristaAccess, map[string]string{"status": "cancelled"}); status != http.StatusOK {
+		t.Fatalf("paid→cancelled: %d: %v", status, resp)
+	}
+
+	// заказ, который доведён до выдачи
+	done := makeOrder(t, e, clientAccess, pointID, menuA, "")
+	doneID := done["id"].(string)
+	for _, next := range []string{"in_production", "ready", "given_out"} {
+		if status, resp := e.doJSON(t, "POST", "/barista/orders/"+doneID+"/status", baristaAccess, map[string]string{"status": next}); status != http.StatusOK {
+			t.Fatalf("переход %s: %d: %v", next, status, resp)
+		}
+	}
+
+	status, resp := e.doJSON(t, "GET", "/barista/queue", baristaAccess, nil)
+	if status != http.StatusOK {
+		t.Fatalf("queue: %d: %v", status, resp)
+	}
+	list := resp["orders"].([]any)
+	if len(list) != 3 {
+		t.Fatalf("queue: ожидали 3 заказа (новый + выданный + отменённый), получили %d: %v", len(list), resp)
+	}
+
+	byStatus := map[string]map[string]any{}
+	for _, it := range list {
+		entry := it.(map[string]any)
+		byStatus[entry["status"].(string)] = entry
+	}
+	for _, want := range []string{"paid", "given_out", "cancelled"} {
+		if byStatus[want] == nil {
+			t.Fatalf("queue: нет заказа в статусе %s: %v", want, resp)
+		}
+	}
+
+	// новый заказ — со срочностью (нужен баристе до первого ответа)
+	if byStatus["paid"]["urgency"] == "" || byStatus["paid"]["until_deadline_seconds"] == nil {
+		t.Fatalf("queue: у нового заказа нет срочности: %v", byStatus["paid"])
+	}
+	// архив дня — без срочности (баристе больше нечего решать)
+	if byStatus["given_out"]["urgency"] != "" || byStatus["cancelled"]["urgency"] != "" {
+		t.Fatalf("queue: у архива дня не пустая срочность: %v", resp)
+	}
+	if got, ok := byStatus["given_out"]["id"].(string); !ok || got != doneID {
+		t.Fatalf("queue: выданный заказ не тот: %v", byStatus["given_out"])
+	}
+	// архив показывает и состав заказа (бариста видит, что выдал)
+	if items, ok := byStatus["given_out"]["items"].([]any); !ok || len(items) == 0 {
+		t.Fatalf("queue: у выданного заказа нет позиций: %v", byStatus["given_out"])
+	}
+	if got, ok := byStatus["cancelled"]["id"].(string); !ok || got != cancelledID {
+		t.Fatalf("queue: отменённый заказ не тот: %v", byStatus["cancelled"])
+	}
+	if got, ok := byStatus["paid"]["id"].(string); !ok || got != newOrder["id"].(string) {
+		t.Fatalf("queue: новый заказ не тот: %v", byStatus["paid"])
+	}
+}
+
 // Тест: промах дедлайна фиксируется и попадает в метрики.
 func TestDeadlineMissE2E(t *testing.T) {
 	e := newTestEnv(t)
