@@ -427,6 +427,10 @@ func TestOwnerAdminE2E(t *testing.T) {
 	if status != http.StatusCreated {
 		t.Fatalf("admin/baristas: статус %d: %v", status, resp)
 	}
+	baristaID, _ := resp["id"].(string)
+	if baristaID == "" || resp["password"] != "supersecret2" {
+		t.Fatalf("admin/baristas: пароль не вернулся: %v", resp)
+	}
 
 	// бариста входит в приложение (разрешено) и видит очередь
 	status, resp = e.doJSON(t, "POST", "/auth/login", "", map[string]string{"email": bEmail, "password": "supersecret2"})
@@ -442,6 +446,89 @@ func TestOwnerAdminE2E(t *testing.T) {
 		t.Fatalf("queue бариста: статус %d: %v", status, resp)
 	}
 
+	// пароль баристы виден владельцу и после перезагрузки страницы
+	status, resp = e.doJSON(t, "GET", "/admin/baristas", ownerAccess, nil)
+	if status != http.StatusOK {
+		t.Fatalf("admin/baristas list: %d: %v", status, resp)
+	}
+	bList, _ := resp["baristas"].([]any)
+	if len(bList) != 1 || bList[0].(map[string]any)["password"] != "supersecret2" {
+		t.Fatalf("admin/baristas list: пароль не виден: %v", resp)
+	}
+
+	// владелец редактирует аккаунт баристы: email, пароль и точка
+	newEmail := uniqueEmail()
+	status, resp = e.doJSON(t, "PATCH", "/admin/baristas/"+baristaID, ownerAccess, map[string]any{
+		"email": newEmail, "password": "newsecret55", "point_id": pointID,
+	})
+	if status != http.StatusOK {
+		t.Fatalf("admin/baristas patch: %d: %v", status, resp)
+	}
+	if resp["email"] != newEmail || resp["password"] != "newsecret55" {
+		t.Fatalf("admin/baristas patch: не применилось: %v", resp)
+	}
+	status, _ = e.doJSON(t, "POST", "/auth/login", "", map[string]string{"email": bEmail, "password": "supersecret2"})
+	if status != http.StatusUnauthorized {
+		t.Fatalf("старый пароль после смены: ждём 401, получили %d", status)
+	}
+	status, resp = e.doJSON(t, "POST", "/auth/login", "", map[string]string{"email": newEmail, "password": "newsecret55"})
+	if status != http.StatusOK {
+		t.Fatalf("вход с новым паролем: %d: %v", status, resp)
+	}
+
+	// владелец меняет информацию о точке
+	status, resp = e.doJSON(t, "PATCH", "/admin/points/"+pointID, ownerAccess, map[string]any{
+		"title": "Точка переименована", "address": "ул. Новая 2", "is_active": true,
+		"window_minutes": 10, "max_orders_per_window": 5,
+		"work_start": "09:00", "work_end": "21:00",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("admin/points patch: %d: %v", status, resp)
+	}
+	if resp["title"] != "Точка переименована" || resp["address"] != "ул. Новая 2" {
+		t.Fatalf("admin/points patch: не применилось: %v", resp)
+	}
+	capacity, _ := resp["capacity_config"].(map[string]any)
+	if capacity["window_minutes"] != float64(10) || capacity["max_orders_per_window"] != float64(5) ||
+		capacity["work_start"] != "09:00" || capacity["work_end"] != "21:00" {
+		t.Fatalf("admin/points patch: ёмкость не применилась: %v", capacity)
+	}
+
+	// владелец видит и правит товары точки
+	status, resp = e.doJSON(t, "GET", "/admin/points/"+pointID+"/menu", ownerAccess, nil)
+	if status != http.StatusOK {
+		t.Fatalf("admin menu: %d: %v", status, resp)
+	}
+	menu, _ := resp["items"].([]any)
+	if len(menu) != 1 {
+		t.Fatalf("admin menu: ждём 1 позицию: %v", resp)
+	}
+	itemID, _ := menu[0].(map[string]any)["id"].(string)
+	status, resp = e.doJSON(t, "PATCH", "/admin/menu/"+itemID, ownerAccess, map[string]any{
+		"title": "Флэт уайт", "price_minor": 30000, "prep_seconds": 200,
+	})
+	if status != http.StatusOK || resp["title"] != "Флэт уайт" || resp["price_minor"] != float64(30000) {
+		t.Fatalf("admin menu patch: %d: %v", status, resp)
+	}
+	status, resp = e.doJSON(t, "POST", "/admin/points/"+pointID+"/menu", ownerAccess, map[string]any{
+		"title": "Американо", "price_minor": 15000, "prep_seconds": 90,
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("admin menu create: %d: %v", status, resp)
+	}
+	newItemID, _ := resp["id"].(string)
+	status, resp = e.doJSON(t, "PATCH", "/admin/menu/"+newItemID, ownerAccess, map[string]any{"is_available": false})
+	if status != http.StatusOK || resp["is_available"] != false {
+		t.Fatalf("admin menu hide: %d: %v", status, resp)
+	}
+	status, resp = e.doJSON(t, "GET", "/admin/points/"+pointID+"/menu", ownerAccess, nil)
+	if status != http.StatusOK {
+		t.Fatalf("admin menu после правок: %d: %v", status, resp)
+	}
+	if menu, _ = resp["items"].([]any); len(menu) != 2 {
+		t.Fatalf("admin menu после правок: ждём 2 позиции: %v", resp)
+	}
+
 	// другой владелец не может привязать баристу к чужой точке
 	email2 := uniqueEmail()
 	_, resp = e.doJSON(t, "POST", "/owners/register", "", map[string]string{"email": email2, "password": "supersecret3"})
@@ -449,5 +536,17 @@ func TestOwnerAdminE2E(t *testing.T) {
 	status, _ = e.doJSON(t, "POST", "/admin/baristas", owner2, map[string]string{"email": uniqueEmail(), "password": "supersecret4", "point_id": pointID})
 	if status != http.StatusForbidden {
 		t.Fatalf("чужая точка: ждём 403, получили %d", status)
+	}
+	status, _ = e.doJSON(t, "PATCH", "/admin/points/"+pointID, owner2, map[string]any{"title": "чужая"})
+	if status != http.StatusNotFound {
+		t.Fatalf("чужая точка patch: ждём 404, получили %d", status)
+	}
+	status, _ = e.doJSON(t, "PATCH", "/admin/menu/"+itemID, owner2, map[string]any{"title": "чужое"})
+	if status != http.StatusNotFound {
+		t.Fatalf("чужое меню patch: ждём 404, получили %d", status)
+	}
+	status, _ = e.doJSON(t, "PATCH", "/admin/baristas/"+baristaID, owner2, map[string]any{"password": "supersecret6"})
+	if status != http.StatusNotFound {
+		t.Fatalf("чужой бариста patch: ждём 404, получили %d", status)
 	}
 }

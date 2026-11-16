@@ -1,6 +1,6 @@
-// Package admin — кабинет владельца на сайте: свои точки и рабочие аккаунты
-// бариста. Роль owner существует только на сайте (в приложение владельцы
-// не входят), поэтому вся админка живёт в отдельных эндпоинтах /admin/*.
+// Package admin — кабинет владельца на сайте: свои точки, меню и рабочие
+// аккаунты бариста. Роль owner существует только на сайте (в приложение
+// владельцы не входят), поэтому вся админка живёт в отдельных эндпоинтах /admin/*.
 package admin
 
 import (
@@ -17,9 +17,12 @@ import (
 )
 
 var (
-	ErrForeignPoint = httpx.NewError(403, "point_foreign", "точка принадлежит другому владельцу")
-	ErrBadCapacity  = httpx.NewError(400, "bad_capacity", "некорректные настройки ёмкости")
-	ErrEmailTaken   = httpx.NewError(409, "email_taken", "email занят")
+	ErrForeignPoint    = httpx.NewError(403, "point_foreign", "точка принадлежит другому владельцу")
+	ErrPointNotFound   = httpx.NewError(404, "point_not_found", "точка не найдена")
+	ErrBadCapacity     = httpx.NewError(400, "bad_capacity", "некорректные настройки ёмкости")
+	ErrEmailTaken      = httpx.NewError(409, "email_taken", "email занят")
+	ErrBaristaNotFound = httpx.NewError(404, "barista_not_found", "бариста не найден")
+	ErrMenuItemMissing = httpx.NewError(404, "menu_item_not_found", "позиция меню не найдена")
 )
 
 // Point — точка кофейни владельца.
@@ -28,25 +31,36 @@ type Point struct {
 	Title    string          `json:"title"`
 	Address  string          `json:"address"`
 	Capacity json.RawMessage `json:"capacity_config"`
+	IsActive bool            `json:"is_active"`
 }
 
 // Barista — рабочий аккаунт, созданный владельцем в кабинете.
+//
+// Password — расшифрованная обратимая копия (users.password_enc), чтобы
+// владелец видел пароль в кабинете и после перезагрузки страницы. Пустая
+// строка — аккаунт создан до миграции 000006 либо ключ сменился: пароль
+// задаётся заново через редактирование.
 type Barista struct {
-	ID         string `json:"id"`
-	Email      string `json:"email"`
-	PointID    string `json:"point_id"`
-	PointTitle string `json:"point_title"`
-	CreatedAt  string `json:"created_at"`
+	ID          string `json:"id"`
+	Email       string `json:"email"`
+	PointID     string `json:"point_id"`
+	PointTitle  string `json:"point_title"`
+	CreatedAt   string `json:"created_at"`
+	Password    string `json:"password,omitempty"`
+	PasswordEnc []byte `json:"-"`
 }
 
-// MenuItem — позиция меню точки.
+// MenuItem — позиция меню точки. Владелец видит и скрытые позиции: их можно
+// вернуть в продажу редактированием.
 type MenuItem struct {
+	ID          string `json:"id"`
 	Title       string `json:"title"`
-	PriceMinor  int    `json:"price_minor"`
+	PriceMinor  int64  `json:"price_minor"`
 	PrepSeconds int    `json:"prep_seconds"`
+	IsAvailable bool   `json:"is_available"`
 }
 
-// Store — SQL для точек и бариста владельца.
+// Store — SQL для точек, меню и бариста владельца.
 type Store struct {
 	pool *pgxpool.Pool
 }
@@ -65,9 +79,9 @@ func (s *Store) CreatePoint(ctx context.Context, ownerID, title, address string,
 	err = tx.QueryRow(ctx, `
 		INSERT INTO points (title, address, capacity_config, owner_id)
 		VALUES ($1, $2, $3, $4)
-		RETURNING id, title, address, capacity_config`,
+		RETURNING id, title, COALESCE(address, ''), capacity_config, is_active`,
 		title, address, capacity, ownerID,
-	).Scan(&p.ID, &p.Title, &p.Address, &p.Capacity)
+	).Scan(&p.ID, &p.Title, &p.Address, &p.Capacity, &p.IsActive)
 	if err != nil {
 		return p, fmt.Errorf("admin: point insert: %w", err)
 	}
@@ -89,7 +103,7 @@ func (s *Store) CreatePoint(ctx context.Context, ownerID, title, address string,
 // ListPoints — точки владельца.
 func (s *Store) ListPoints(ctx context.Context, ownerID string) ([]Point, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, title, address, capacity_config
+		SELECT id, title, COALESCE(address, ''), capacity_config, is_active
 		FROM points WHERE owner_id = $1
 		ORDER BY created_at`, ownerID)
 	if err != nil {
@@ -99,7 +113,7 @@ func (s *Store) ListPoints(ctx context.Context, ownerID string) ([]Point, error)
 	points := []Point{}
 	for rows.Next() {
 		var p Point
-		if err := rows.Scan(&p.ID, &p.Title, &p.Address, &p.Capacity); err != nil {
+		if err := rows.Scan(&p.ID, &p.Title, &p.Address, &p.Capacity, &p.IsActive); err != nil {
 			return nil, fmt.Errorf("admin: points scan: %w", err)
 		}
 		points = append(points, p)
@@ -107,7 +121,87 @@ func (s *Store) ListPoints(ctx context.Context, ownerID string) ([]Point, error)
 	return points, rows.Err()
 }
 
-// PointOwnedBy — точка принадлежит владельцу? (перед привязкой баристы)
+// PointPatch — частичное изменение точки: nil-поля не трогаем.
+type PointPatch struct {
+	Title              *string
+	Address            *string
+	IsActive           *bool
+	WindowMinutes      *int
+	MaxOrdersPerWindow *int
+	WorkStart          *string
+	WorkEnd            *string
+}
+
+// UpdatePoint — меняет название, адрес, активность и параметры ёмкости точки.
+// Неизвестные ключи capacity_config сохраняются: конфиг правится поверх.
+func (s *Store) UpdatePoint(ctx context.Context, ownerID, pointID string, patch PointPatch) (Point, error) {
+	var p Point
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return p, fmt.Errorf("admin: point update tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var capacityRaw []byte
+	err = tx.QueryRow(ctx, `
+		SELECT id, title, COALESCE(address, ''), capacity_config, is_active
+		FROM points WHERE id = $1 AND owner_id = $2
+		FOR UPDATE`, pointID, ownerID,
+	).Scan(&p.ID, &p.Title, &p.Address, &capacityRaw, &p.IsActive)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return p, ErrPointNotFound
+	}
+	if err != nil {
+		return p, fmt.Errorf("admin: point update load: %w", err)
+	}
+
+	if patch.Title != nil {
+		p.Title = *patch.Title
+	}
+	if patch.Address != nil {
+		p.Address = *patch.Address
+	}
+	if patch.IsActive != nil {
+		p.IsActive = *patch.IsActive
+	}
+
+	capacity := map[string]any{}
+	if len(capacityRaw) > 0 {
+		if err := json.Unmarshal(capacityRaw, &capacity); err != nil {
+			return p, fmt.Errorf("admin: capacity json: %w", err)
+		}
+	}
+	if patch.WindowMinutes != nil {
+		capacity["window_minutes"] = *patch.WindowMinutes
+	}
+	if patch.MaxOrdersPerWindow != nil {
+		capacity["max_orders_per_window"] = *patch.MaxOrdersPerWindow
+	}
+	if patch.WorkStart != nil {
+		capacity["work_start"] = *patch.WorkStart
+	}
+	if patch.WorkEnd != nil {
+		capacity["work_end"] = *patch.WorkEnd
+	}
+	if p.Capacity, err = json.Marshal(capacity); err != nil {
+		return p, fmt.Errorf("admin: capacity marshal: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE points
+		SET title = $2, address = $3, capacity_config = $4, is_active = $5
+		WHERE id = $1`,
+		p.ID, p.Title, p.Address, p.Capacity, p.IsActive,
+	); err != nil {
+		return p, fmt.Errorf("admin: point update: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return p, fmt.Errorf("admin: point update commit: %w", err)
+	}
+	return p, nil
+}
+
+// PointOwnedBy — точка принадлежит владельцу? (перед привязкой баристы и меню)
 func (s *Store) PointOwnedBy(ctx context.Context, ownerID, pointID string) (bool, error) {
 	var ok bool
 	err := s.pool.QueryRow(ctx,
@@ -118,7 +212,8 @@ func (s *Store) PointOwnedBy(ctx context.Context, ownerID, pointID string) (bool
 }
 
 // CreateBarista — рабочий аккаунт баристы + привязка к точке владельца (tx).
-func (s *Store) CreateBarista(ctx context.Context, email, passwordHash, pointID string) (Barista, error) {
+// passwordEnc — обратимая копия пароля для показа владельцу в кабинете.
+func (s *Store) CreateBarista(ctx context.Context, email, passwordHash string, passwordEnc []byte, pointID string) (Barista, error) {
 	var b Barista
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -127,8 +222,9 @@ func (s *Store) CreateBarista(ctx context.Context, email, passwordHash, pointID 
 	defer tx.Rollback(ctx)
 
 	err = tx.QueryRow(ctx, `
-		INSERT INTO users (email, role, password_hash) VALUES ($1, 'barista', $2)
-		RETURNING id`, email, passwordHash,
+		INSERT INTO users (email, role, password_hash, password_enc)
+		VALUES ($1, 'barista', $2, $3)
+		RETURNING id`, email, passwordHash, passwordEnc,
 	).Scan(&b.ID)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -164,10 +260,11 @@ func (s *Store) CreateBarista(ctx context.Context, email, passwordHash, pointID 
 	return b, nil
 }
 
-// ListBaristas — все рабочие аккаунты всех точек владельца.
+// ListBaristas — все рабочие аккаунты всех точек владельца. Обратимая копия
+// пароля возвращается как есть; расшифровывает её хендлер.
 func (s *Store) ListBaristas(ctx context.Context, ownerID string) ([]Barista, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT u.id, u.email, bp.point_id, p.title, bp.created_at::text
+		SELECT u.id, u.email, bp.point_id, p.title, bp.created_at::text, u.password_enc
 		FROM barista_points bp
 		JOIN users u ON u.id = bp.user_id
 		JOIN points p ON p.id = bp.point_id
@@ -180,12 +277,201 @@ func (s *Store) ListBaristas(ctx context.Context, ownerID string) ([]Barista, er
 	list := []Barista{}
 	for rows.Next() {
 		var b Barista
-		if err := rows.Scan(&b.ID, &b.Email, &b.PointID, &b.PointTitle, &b.CreatedAt); err != nil {
+		if err := rows.Scan(&b.ID, &b.Email, &b.PointID, &b.PointTitle, &b.CreatedAt, &b.PasswordEnc); err != nil {
 			return nil, fmt.Errorf("admin: baristas scan: %w", err)
 		}
 		list = append(list, b)
 	}
 	return list, rows.Err()
+}
+
+// BaristaPatch — частичное изменение рабочего аккаунта.
+type BaristaPatch struct {
+	Email        *string
+	PasswordHash *string
+	PasswordEnc  []byte
+	PointID      *string
+}
+
+// UpdateBarista — меняет email, пароль и/или точку баристы. Пароль меняется
+// только вместе с хешем и шифрокопией. Смена пароля отзывает refresh-токены,
+// чтобы старые сессии не жили со старым паролем.
+func (s *Store) UpdateBarista(ctx context.Context, ownerID, baristaID string, patch BaristaPatch) (Barista, error) {
+	var b Barista
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return b, fmt.Errorf("admin: barista update tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var owned bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM barista_points bp
+			JOIN users u ON u.id = bp.user_id
+			JOIN points p ON p.id = bp.point_id
+			WHERE bp.user_id = $1 AND u.role = 'barista' AND p.owner_id = $2
+		)`, baristaID, ownerID,
+	).Scan(&owned); err != nil {
+		return b, fmt.Errorf("admin: barista owner check: %w", err)
+	}
+	if !owned {
+		return b, ErrBaristaNotFound
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE users
+		SET email = COALESCE($2, email),
+		    password_hash = COALESCE($3, password_hash),
+		    password_enc = COALESCE($4, password_enc)
+		WHERE id = $1`,
+		baristaID, patch.Email, patch.PasswordHash, patch.PasswordEnc,
+	); err != nil {
+		if isUniqueViolation(err) {
+			return b, ErrEmailTaken
+		}
+		return b, fmt.Errorf("admin: barista update: %w", err)
+	}
+	if patch.PointID != nil {
+		if _, err := tx.Exec(ctx,
+			`UPDATE barista_points SET point_id = $2 WHERE user_id = $1`,
+			baristaID, *patch.PointID,
+		); err != nil {
+			return b, fmt.Errorf("admin: barista rebind: %w", err)
+		}
+	}
+	if patch.PasswordHash != nil {
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM refresh_tokens WHERE user_id = $1`, baristaID,
+		); err != nil {
+			return b, fmt.Errorf("admin: revoke barista sessions: %w", err)
+		}
+	}
+
+	err = tx.QueryRow(ctx, `
+		SELECT u.id, u.email, bp.point_id, p.title, bp.created_at::text, u.password_enc
+		FROM barista_points bp
+		JOIN users u ON u.id = bp.user_id
+		JOIN points p ON p.id = bp.point_id
+		WHERE bp.user_id = $1`, baristaID,
+	).Scan(&b.ID, &b.Email, &b.PointID, &b.PointTitle, &b.CreatedAt, &b.PasswordEnc)
+	if err != nil {
+		return b, fmt.Errorf("admin: barista reload: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return b, fmt.Errorf("admin: barista update commit: %w", err)
+	}
+	return b, nil
+}
+
+// ListMenu — все позиции меню точки, включая скрытые из продажи.
+func (s *Store) ListMenu(ctx context.Context, ownerID, pointID string) ([]MenuItem, error) {
+	owned, err := s.PointOwnedBy(ctx, ownerID, pointID)
+	if err != nil {
+		return nil, fmt.Errorf("admin: menu owner check: %w", err)
+	}
+	if !owned {
+		return nil, ErrPointNotFound
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, title, price_minor, prep_seconds, is_available
+		FROM menu_items WHERE point_id = $1
+		ORDER BY title`, pointID)
+	if err != nil {
+		return nil, fmt.Errorf("admin: menu list: %w", err)
+	}
+	defer rows.Close()
+	items := []MenuItem{}
+	for rows.Next() {
+		var m MenuItem
+		if err := rows.Scan(&m.ID, &m.Title, &m.PriceMinor, &m.PrepSeconds, &m.IsAvailable); err != nil {
+			return nil, fmt.Errorf("admin: menu scan: %w", err)
+		}
+		items = append(items, m)
+	}
+	return items, rows.Err()
+}
+
+// CreateMenuItem — новая позиция меню точки.
+func (s *Store) CreateMenuItem(ctx context.Context, ownerID, pointID, title string, priceMinor int64, prepSeconds int) (MenuItem, error) {
+	var m MenuItem
+	owned, err := s.PointOwnedBy(ctx, ownerID, pointID)
+	if err != nil {
+		return m, fmt.Errorf("admin: menu owner check: %w", err)
+	}
+	if !owned {
+		return m, ErrPointNotFound
+	}
+	err = s.pool.QueryRow(ctx, `
+		INSERT INTO menu_items (point_id, title, price_minor, prep_seconds)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, title, price_minor, prep_seconds, is_available`,
+		pointID, title, priceMinor, prepSeconds,
+	).Scan(&m.ID, &m.Title, &m.PriceMinor, &m.PrepSeconds, &m.IsAvailable)
+	if err != nil {
+		return m, fmt.Errorf("admin: menu insert: %w", err)
+	}
+	return m, nil
+}
+
+// MenuItemPatch — частичное изменение позиции меню.
+type MenuItemPatch struct {
+	Title       *string
+	PriceMinor  *int64
+	PrepSeconds *int
+	IsAvailable *bool
+}
+
+// UpdateMenuItem — меняет название, цену, время приготовления или видимость.
+func (s *Store) UpdateMenuItem(ctx context.Context, ownerID, itemID string, patch MenuItemPatch) (MenuItem, error) {
+	var m MenuItem
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return m, fmt.Errorf("admin: menu update tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	err = tx.QueryRow(ctx, `
+		SELECT mi.id, mi.title, mi.price_minor, mi.prep_seconds, mi.is_available
+		FROM menu_items mi
+		JOIN points p ON p.id = mi.point_id
+		WHERE mi.id = $1 AND p.owner_id = $2
+		FOR UPDATE OF mi`, itemID, ownerID,
+	).Scan(&m.ID, &m.Title, &m.PriceMinor, &m.PrepSeconds, &m.IsAvailable)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return m, ErrMenuItemMissing
+	}
+	if err != nil {
+		return m, fmt.Errorf("admin: menu update load: %w", err)
+	}
+
+	if patch.Title != nil {
+		m.Title = *patch.Title
+	}
+	if patch.PriceMinor != nil {
+		m.PriceMinor = *patch.PriceMinor
+	}
+	if patch.PrepSeconds != nil {
+		m.PrepSeconds = *patch.PrepSeconds
+	}
+	if patch.IsAvailable != nil {
+		m.IsAvailable = *patch.IsAvailable
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE menu_items
+		SET title = $2, price_minor = $3, prep_seconds = $4, is_available = $5
+		WHERE id = $1`,
+		m.ID, m.Title, m.PriceMinor, m.PrepSeconds, m.IsAvailable,
+	); err != nil {
+		return m, fmt.Errorf("admin: menu update: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return m, fmt.Errorf("admin: menu update commit: %w", err)
+	}
+	return m, nil
 }
 
 func isUniqueViolation(err error) bool {

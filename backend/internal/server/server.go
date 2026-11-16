@@ -14,6 +14,7 @@ import (
 	"github.com/Incept10n/coffeely/backend/internal/httpx"
 	"github.com/Incept10n/coffeely/backend/internal/orders"
 	"github.com/Incept10n/coffeely/backend/internal/points"
+	"github.com/Incept10n/coffeely/backend/internal/securebox"
 	"github.com/Incept10n/coffeely/backend/internal/superadmin"
 )
 
@@ -60,13 +61,19 @@ func New(pool *pgxpool.Pool, cfg config.Config) http.Handler {
 	mux.HandleFunc("POST /owners/register", authHandlers.OwnersRegister)
 	mux.HandleFunc("POST /owners/login", authHandlers.OwnersLogin)
 
-	// Админка владельца: свои точки и рабочие аккаунты бариста.
-	adminHandlers := admin.NewHandlers(admin.NewStore(pool))
+	// Админка владельца: свои точки, меню и рабочие аккаунты бариста.
+	// Обратимые копии паролей бариста шифруются ключом из JWT_SECRET.
+	adminHandlers := admin.NewHandlers(admin.NewStore(pool), securebox.New(cfg.JWTSecret))
 	ownerOnly := adminHandlers.RequireOwner(authenticate)
 	mux.Handle("POST /admin/points", ownerOnly(http.HandlerFunc(adminHandlers.CreatePoint)))
 	mux.Handle("GET /admin/points", ownerOnly(http.HandlerFunc(adminHandlers.ListPoints)))
+	mux.Handle("PATCH /admin/points/{id}", ownerOnly(http.HandlerFunc(adminHandlers.UpdatePoint)))
+	mux.Handle("GET /admin/points/{id}/menu", ownerOnly(http.HandlerFunc(adminHandlers.ListMenu)))
+	mux.Handle("POST /admin/points/{id}/menu", ownerOnly(http.HandlerFunc(adminHandlers.CreateMenuItem)))
+	mux.Handle("PATCH /admin/menu/{id}", ownerOnly(http.HandlerFunc(adminHandlers.UpdateMenuItem)))
 	mux.Handle("POST /admin/baristas", ownerOnly(http.HandlerFunc(adminHandlers.CreateBarista)))
 	mux.Handle("GET /admin/baristas", ownerOnly(http.HandlerFunc(adminHandlers.ListBaristas)))
+	mux.Handle("PATCH /admin/baristas/{id}", ownerOnly(http.HandlerFunc(adminHandlers.UpdateBarista)))
 
 	// Внутренняя админка создателей бизнеса: /admin на сайте, вход по общему
 	// секрету ADMIN_CRM_SECRET (не путать с кабинетом владельца /admin/*).

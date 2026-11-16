@@ -81,8 +81,13 @@ go run ./cmd/migrate drop   # снести всё (только dev!)
 | POST | `/owners/login` | все | вход владельца в кабинет на сайте |
 | POST | `/admin/points` | Bearer owner | создать точку (+меню) владельца |
 | GET | `/admin/points` | Bearer owner | точки владельца |
+| PATCH | `/admin/points/{id}` | Bearer owner | изменить точку: название, адрес, активность, ёмкость |
+| GET | `/admin/points/{id}/menu` | Bearer owner | меню точки, включая скрытые позиции |
+| POST | `/admin/points/{id}/menu` | Bearer owner | добавить товар в меню точки |
+| PATCH | `/admin/menu/{id}` | Bearer owner | изменить товар: название, цена, prep, видимость |
 | POST | `/admin/baristas` | Bearer owner | создать рабочий аккаунт баристы на свою точку |
-| GET | `/admin/baristas` | Bearer owner | список бариста по точкам владельца |
+| GET | `/admin/baristas` | Bearer owner | список бариста по точкам владельца; пароль виден владельцу |
+| PATCH | `/admin/baristas/{id}` | Bearer owner | изменить баристу: email, пароль, точка (§ см. ниже) |
 | POST | `/internal/admin/login` | `X-Admin-Secret` / тело `{secret}` | проверка строки доступа внутренней админки (limiter: 20 попыток / 15 мин на IP) |
 | GET | `/internal/admin/analytics?days=30` | `X-Admin-Secret` | сводная аналитика платформы для создателей: деньги, заказы, дедлайны, точки, владельцы, бариста, активация |
 
@@ -90,6 +95,14 @@ go run ./cmd/migrate drop   # снести всё (только dev!)
 `/admin/*` — сайт (только владелец), `/internal/admin/*` — внутренняя админка
 создателей (общий секрет, без пользователей и ролей). Владелец не входит в
 приложение (`/auth/login` для owner отвечает 403).
+
+Пароли бариста хранятся двумя способами: argon2id-хеш в `users.password_hash`
+(проверка входа) и обратимая AES-256-GCM копия в `users.password_enc` — чтобы
+владелец видел пароль в кабинете после перезагрузки страницы и мог его сменить.
+Ключ выводится из `JWT_SECRET` через HMAC-SHA256 (метка `coffeely/user-password/v1`);
+при смене `JWT_SECRET` старые копии перестают читаться — owner задаёт пароль
+заново через `PATCH /admin/baristas/{id}`. Смена пароля отзывает refresh-токены
+баристы.
 
 ### Движок ёмкости (v2, без выбора окон)
 
@@ -151,7 +164,8 @@ internal/config/  — конфигурация (env)
 internal/db/      — pgxpool, подключение к БД
 internal/server/  — сборка маршрутов + e2e-тесты
 internal/auth/    — argon2id, JWT access+refresh, Yandex ID, middleware ролей
-internal/admin/   — кабинет владельца: точки, рабочие аккаунты бариста
+internal/admin/   — кабинет владельца: точки, меню, рабочие аккаунты бариста
+internal/securebox/ — обратимое шифрование паролей бариста (AES-256-GCM)
 internal/superadmin/ — внутренняя админка создателей (/admin): вход по секрету, аналитика
 internal/httpx/   — JSON-помощники, API-ошибки
 internal/orders/  — (M3/M4) заказы, статусы, KDS-очередь

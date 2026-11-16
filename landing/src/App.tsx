@@ -354,6 +354,7 @@ type Point = {
   title: string;
   address: string;
   capacity_config: { window_minutes: number; max_orders_per_window: number; work_start: string; work_end: string };
+  is_active: boolean;
 };
 
 type Barista = {
@@ -362,6 +363,15 @@ type Barista = {
   point_id: string;
   point_title: string;
   created_at: string;
+  password?: string;
+};
+
+type MenuItem = {
+  id: string;
+  title: string;
+  price_minor: number;
+  prep_seconds: number;
+  is_available: boolean;
 };
 
 const TARIFFS = [
@@ -374,7 +384,6 @@ function OwnerCabinet() {
   const [state, setState] = useState<"loading" | "login" | "ready">("loading");
   const [points, setPoints] = useState<Point[]>([]);
   const [baristas, setBaristas] = useState<Barista[]>([]);
-  const [createdBarista, setCreatedBarista] = useState<{ email: string; password: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   async function refreshData(token: string) {
@@ -466,17 +475,15 @@ function OwnerCabinet() {
         {points.length === 0 && <p className="owner__hint">Пока ни одной точки.</p>}
         <div className="list">
           {points.map((p) => (
-            <div className="list__row" key={p.id}>
-              <div>
-                <strong>{p.title}</strong>
-                {p.address ? <span className="badge"> · {p.address}</span> : null}
-              </div>
-              <span className="badge">
-                окна {p.capacity_config?.window_minutes} мин · до{" "}
-                {p.capacity_config?.max_orders_per_window} зак. ·{" "}
-                {p.capacity_config?.work_start}–{p.capacity_config?.work_end}
-              </span>
-            </div>
+            <PointRow
+              key={p.id}
+              point={p}
+              onChanged={async (msg) => {
+                setNotice(msg);
+                const t = loadTokens();
+                if (t) await refreshData(t.access);
+              }}
+            />
           ))}
         </div>
         <AddPointForm
@@ -493,25 +500,22 @@ function OwnerCabinet() {
         {baristas.length === 0 && <p className="owner__hint">Рабочих аккаунтов пока нет.</p>}
         <div className="list">
           {baristas.map((b) => (
-            <div className="list__row" key={b.id}>
-              <div>
-                <strong>{b.email}</strong>
-              </div>
-              <span className="badge">{b.point_title}</span>
-            </div>
+            <BaristaRow
+              key={b.id}
+              barista={b}
+              points={points}
+              onChanged={async (msg) => {
+                setNotice(msg);
+                const t = loadTokens();
+                if (t) await refreshData(t.access);
+              }}
+            />
           ))}
         </div>
-        {createdBarista && (
-          <p className="owner__created">
-            Бариста создан: <strong>{createdBarista.email}</strong> / пароль{" "}
-            <strong>{createdBarista.password}</strong> — передайте их ему для
-            входа в приложение.
-          </p>
-        )}
         <AddBaristaForm
           points={points}
-          onCreated={async (email, password) => {
-            setCreatedBarista({ email, password });
+          onCreated={async () => {
+            setNotice("Бариста создан — пароль виден в списке выше.");
             const t = loadTokens();
             if (t) await refreshData(t.access);
           }}
@@ -681,12 +685,472 @@ function AddPointForm({ onCreated }: { onCreated: (msg: string) => void | Promis
   );
 }
 
+/* --------------------- Редактирование точки и меню ----------------------- */
+
+function PointRow({
+  point,
+  onChanged,
+}: {
+  point: Point;
+  onChanged: (msg: string) => void | Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const cap = point.capacity_config ?? {
+    window_minutes: 5,
+    max_orders_per_window: 3,
+    work_start: "08:00",
+    work_end: "20:00",
+  };
+
+  return (
+    <div className="list__row list__row--stack">
+      <div className="owner__row owner__row--between">
+        <div>
+          <strong>{point.title}</strong>
+          {point.address ? <span className="badge"> · {point.address}</span> : null}
+          {!point.is_active ? <span className="badge"> · выключена</span> : null}
+        </div>
+        <div className="owner__row owner__row--tight">
+          <span className="badge">
+            окна {cap.window_minutes} мин · до {cap.max_orders_per_window} зак. ·{" "}
+            {cap.work_start}–{cap.work_end}
+          </span>
+          <button
+            type="button"
+            className="button button--ghost"
+            onClick={() => setEditing((v) => !v)}
+          >
+            {editing ? "Отмена" : "Изменить"}
+          </button>
+          <button
+            type="button"
+            className="button button--ghost"
+            onClick={() => setMenuOpen((v) => !v)}
+          >
+            {menuOpen ? "Скрыть товары" : "Товары"}
+          </button>
+        </div>
+      </div>
+      {editing && (
+        <EditPointForm
+          point={point}
+          onSaved={async () => {
+            setEditing(false);
+            await onChanged("Точка обновлена.");
+          }}
+        />
+      )}
+      {menuOpen && <PointMenu point={point} />}
+    </div>
+  );
+}
+
+function EditPointForm({ point, onSaved }: { point: Point; onSaved: () => void | Promise<void> }) {
+  const cap = point.capacity_config ?? {
+    window_minutes: 5,
+    max_orders_per_window: 3,
+    work_start: "08:00",
+    work_end: "20:00",
+  };
+  const [form, setForm] = useState({
+    title: point.title,
+    address: point.address,
+    windowMinutes: String(cap.window_minutes),
+    maxPerWindow: String(cap.max_orders_per_window),
+    workStart: cap.work_start,
+    workEnd: cap.work_end,
+    active: point.is_active,
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const set = (k: keyof typeof form) => (e: { target: { value: string } }) =>
+    setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/admin/points/${point.id}`, {
+        method: "PATCH",
+        token: loadTokens()?.access,
+        body: {
+          title: form.title.trim(),
+          address: form.address.trim(),
+          window_minutes: Number(form.windowMinutes),
+          max_orders_per_window: Number(form.maxPerWindow),
+          work_start: form.workStart,
+          work_end: form.workEnd,
+          is_active: form.active,
+        },
+      });
+      await onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ошибка сети");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="owner__form" onSubmit={submit}>
+      <div className="owner__grid">
+        <label className="field">
+          <span>Название точки</span>
+          <input required value={form.title} onChange={set("title")} />
+        </label>
+        <label className="field">
+          <span>Адрес</span>
+          <input value={form.address} onChange={set("address")} />
+        </label>
+        <label className="field">
+          <span>Окно, минут</span>
+          <input type="number" min={1} max={60} required value={form.windowMinutes} onChange={set("windowMinutes")} />
+        </label>
+        <label className="field">
+          <span>Заказов на окно</span>
+          <input type="number" min={1} max={100} required value={form.maxPerWindow} onChange={set("maxPerWindow")} />
+        </label>
+        <label className="field">
+          <span>Начало работы</span>
+          <input required value={form.workStart} onChange={set("workStart")} placeholder="08:00" />
+        </label>
+        <label className="field">
+          <span>Конец работы</span>
+          <input required value={form.workEnd} onChange={set("workEnd")} placeholder="20:00" />
+        </label>
+      </div>
+      <label className="field field--check">
+        <input
+          type="checkbox"
+          checked={form.active}
+          onChange={(e) => setForm((f) => ({ ...f, active: e.target.checked }))}
+        />
+        <span>Точка активна — видна гостям и принимает заказы</span>
+      </label>
+      {error && <p className="owner__error">{error}</p>}
+      <button className="button" disabled={busy}>
+        {busy ? "Сохраняем…" : "Сохранить точку"}
+      </button>
+    </form>
+  );
+}
+
+function PointMenu({ point }: { point: Point }) {
+  const [items, setItems] = useState<MenuItem[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [title, setTitle] = useState("");
+  const [price, setPrice] = useState("");
+  const [prep, setPrep] = useState("180");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await api<{ items: MenuItem[] }>(`/admin/points/${point.id}/menu`, {
+          token: loadTokens()?.access,
+        });
+        setItems(res.items);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "ошибка сети");
+      }
+    })();
+  }, [point.id]);
+
+  async function add(e: FormEvent) {
+    e.preventDefault();
+    const priceMinor = rubToMinor(price);
+    if (
+      !title.trim() ||
+      !Number.isFinite(priceMinor) ||
+      priceMinor <= 0 ||
+      !Number.isFinite(Number(prep)) ||
+      Number(prep) <= 0
+    ) {
+      setError("Заполните название, цену в рублях и время приготовления в секундах");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const item = await api<MenuItem>(`/admin/points/${point.id}/menu`, {
+        body: { title: title.trim(), price_minor: priceMinor, prep_seconds: Number(prep) },
+        token: loadTokens()?.access,
+      });
+      setItems((cur) =>
+        cur ? [...cur, item].sort((a, b) => a.title.localeCompare(b.title, "ru")) : [item],
+      );
+      setTitle("");
+      setPrice("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ошибка сети");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="owner__menu">
+      <p className="owner__hint">Товары точки: цена и время приготовления влияют на расчёт времени готовности.</p>
+      {error && <p className="owner__error">{error}</p>}
+      {items === null ? (
+        <p className="owner__hint">Загружаем меню…</p>
+      ) : items.length === 0 ? (
+        <p className="owner__hint">Позиций пока нет.</p>
+      ) : (
+        <div className="owner__menu-list">
+          {items.map((it) => (
+            <MenuItemRow
+              key={it.id}
+              item={it}
+              onSaved={(updated) =>
+                setItems((cur) => cur && cur.map((x) => (x.id === updated.id ? updated : x)))
+              }
+            />
+          ))}
+        </div>
+      )}
+      <form className="owner__form" onSubmit={add}>
+        <div className="owner__menu-row">
+          <label className="field">
+            <span>Новый товар</span>
+            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Флэт уайт" />
+          </label>
+          <label className="field">
+            <span>Цена, ₽</span>
+            <input inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="280" />
+          </label>
+          <label className="field">
+            <span>Готовить, сек</span>
+            <input type="number" min={1} value={prep} onChange={(e) => setPrep(e.target.value)} />
+          </label>
+        </div>
+        <button className="button" disabled={busy}>
+          {busy ? "Добавляем…" : "Добавить товар"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function MenuItemRow({ item, onSaved }: { item: MenuItem; onSaved: (item: MenuItem) => void }) {
+  const [title, setTitle] = useState(item.title);
+  const [price, setPrice] = useState(minorToRub(item.price_minor));
+  const [prep, setPrep] = useState(String(item.prep_seconds));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(patch: Record<string, unknown>) {
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await api<MenuItem>(`/admin/menu/${item.id}`, {
+        method: "PATCH",
+        body: patch,
+        token: loadTokens()?.access,
+      });
+      onSaved(updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ошибка сети");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveFields(e: FormEvent) {
+    e.preventDefault();
+    const priceMinor = rubToMinor(price);
+    if (
+      !title.trim() ||
+      !Number.isFinite(priceMinor) ||
+      priceMinor <= 0 ||
+      !Number.isFinite(Number(prep)) ||
+      Number(prep) <= 0
+    ) {
+      setError("Проверьте название, цену и время приготовления");
+      return;
+    }
+    await save({ title: title.trim(), price_minor: priceMinor, prep_seconds: Number(prep) });
+  }
+
+  return (
+    <form className="owner__menu-item" onSubmit={saveFields}>
+      <div className="owner__menu-row">
+        <label className="field">
+          <span>Название</span>
+          <input required value={title} onChange={(e) => setTitle(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Цена, ₽</span>
+          <input inputMode="decimal" required value={price} onChange={(e) => setPrice(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Готовить, сек</span>
+          <input type="number" min={1} required value={prep} onChange={(e) => setPrep(e.target.value)} />
+        </label>
+      </div>
+      <div className="owner__row">
+        <button className="button" disabled={busy}>
+          {busy ? "Сохраняем…" : "Сохранить"}
+        </button>
+        <button
+          type="button"
+          className="button button--ghost"
+          disabled={busy}
+          onClick={() => void save({ is_available: !item.is_available })}
+        >
+          {item.is_available ? "Скрыть из меню" : "Вернуть в продажу"}
+        </button>
+        <span className="badge">{item.is_available ? "в продаже" : "скрыт"}</span>
+      </div>
+      {error && <p className="owner__error">{error}</p>}
+    </form>
+  );
+}
+
+/* ------------------ Редактирование аккаунта баристы --------------------- */
+
+function BaristaRow({
+  barista,
+  points,
+  onChanged,
+}: {
+  barista: Barista;
+  points: Point[];
+  onChanged: (msg: string) => void | Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+
+  return (
+    <div className="list__row list__row--stack">
+      <div className="owner__row owner__row--between">
+        <div>
+          <strong>{barista.email}</strong>
+          <span className="badge"> · {barista.point_title}</span>
+        </div>
+        <div className="owner__row owner__row--tight">
+          <span className="badge">
+            пароль:{" "}
+            <code className="owner__secret">
+              {barista.password || "не сохранён — задайте заново"}
+            </code>
+          </span>
+          <button
+            type="button"
+            className="button button--ghost"
+            onClick={() => setEditing((v) => !v)}
+          >
+            {editing ? "Отмена" : "Изменить"}
+          </button>
+        </div>
+      </div>
+      {editing && (
+        <EditBaristaForm
+          barista={barista}
+          points={points}
+          onSaved={async () => {
+            setEditing(false);
+            await onChanged("Аккаунт баристы обновлён.");
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function EditBaristaForm({
+  barista,
+  points,
+  onSaved,
+}: {
+  barista: Barista;
+  points: Point[];
+  onSaved: () => void | Promise<void>;
+}) {
+  const [email, setEmail] = useState(barista.email);
+  const [password, setPassword] = useState(barista.password ?? "");
+  const [pointId, setPointId] = useState(barista.point_id);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (password !== "" && password.length < 8) {
+      setError("Пароль короче 8 символов");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const body: { email: string; point_id: string; password?: string } = {
+        email: email.trim(),
+        point_id: pointId,
+      };
+      if (password !== "") body.password = password;
+      await api<Barista>(`/admin/baristas/${barista.id}`, {
+        method: "PATCH",
+        body,
+        token: loadTokens()?.access,
+      });
+      await onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ошибка сети");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="owner__form" onSubmit={submit}>
+      <div className="owner__grid">
+        <label className="field">
+          <span>Email</span>
+          <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Пароль — виден владельцу и баристе</span>
+          <input
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            minLength={8}
+            placeholder="пусто — не менять"
+            autoComplete="off"
+          />
+        </label>
+        <label className="field">
+          <span>Точка</span>
+          <select value={pointId} onChange={(e) => setPointId(e.target.value)}>
+            {points.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.title}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      {error && <p className="owner__error">{error}</p>}
+      <button className="button" disabled={busy}>
+        {busy ? "Сохраняем…" : "Сохранить баристу"}
+      </button>
+    </form>
+  );
+}
+
+function rubToMinor(value: string): number {
+  return Math.round(Number(value.replace(",", ".").trim()) * 100);
+}
+
+function minorToRub(minor: number): string {
+  return (minor / 100).toFixed(2).replace(/\.00$/, "");
+}
+
 function AddBaristaForm({
   points,
   onCreated,
 }: {
   points: Point[];
-  onCreated: (email: string, password: string) => void | Promise<void>;
+  onCreated: () => void | Promise<void>;
 }) {
   const [pointId, setPointId] = useState("");
   const [email, setEmail] = useState("");
@@ -710,13 +1174,13 @@ function AddBaristaForm({
     setBusy(true);
     setError(null);
     try {
-      const data = await api<Barista>("/admin/baristas", {
+      await api<Barista>("/admin/baristas", {
         token: loadTokens()?.access,
         body: { email: email.trim(), password, point_id: pointId },
       });
       setEmail("");
       setPassword("");
-      await onCreated(data.email, password);
+      await onCreated();
     } catch (err) {
       setError(err instanceof Error ? err.message : "ошибка сети");
     } finally {

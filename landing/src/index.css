@@ -673,6 +673,73 @@ p {
   color: var(--muted);
 }
 
+.list__row--stack {
+  display: block;
+}
+
+.owner__row--between {
+  width: 100%;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.owner__row--tight {
+  margin-top: 0;
+  align-items: center;
+}
+
+.field--check {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+.field--check input {
+  width: auto;
+  accent-color: var(--accent);
+}
+
+.owner__secret {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  color: var(--espresso);
+  background: var(--cream-2);
+  padding: 2px 7px;
+  border-radius: 6px;
+}
+
+.owner__menu {
+  width: 100%;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.owner__menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.owner__menu-item {
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  padding: 12px 12px 4px;
+}
+
+.owner__menu-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 0 12px;
+}
+
+@media (max-width: 720px) {
+  .owner__menu-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 .tariffs {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

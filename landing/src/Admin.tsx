@@ -275,6 +275,10 @@ export default function AdminPanel() {
     setError(null);
   }
 
+  if (!secret) {
+    return <AdminLogin busy={busy} error={error} onSubmit={login} />;
+  }
+
   return (
     <>
       <header className="top">
@@ -285,18 +289,14 @@ export default function AdminPanel() {
           </a>
           <nav className="top__nav">
             <a href="/">Витрина</a>
-            {secret ? (
-              <button type="button" className="top__cta top__cta--button" onClick={logout}>
-                Выйти
-              </button>
-            ) : null}
+            <button type="button" className="top__cta top__cta--button" onClick={logout}>
+              Выйти
+            </button>
           </nav>
         </div>
       </header>
 
-      {!secret ? (
-        <AdminLogin busy={busy} error={error} onSubmit={login} />
-      ) : data ? (
+      {data ? (
         <Dashboard
           data={data}
           days={days}
@@ -347,21 +347,15 @@ function AdminLogin({
   return (
     <main className="admin admin--login">
       <div className="admin__login">
-        <p className="eyebrow">Внутренняя админка</p>
-        <h1 className="owner__title">Создатели coffeely</h1>
-        <p className="owner__subtitle">
-          Сводная аналитика по платформе: владельцы, точки, заказы, деньги и дедлайны.
-          Вход по строке доступа из секрета <code>ADMIN_CRM_SECRET</code>.
-        </p>
         <form className="owner__form" onSubmit={submit}>
           <label className="field">
-            <span>Строка доступа</span>
             <input
               type="password"
               autoFocus
+              autoComplete="off"
+              aria-label="Строка доступа"
               value={value}
               onChange={(e) => setValue(e.target.value)}
-              placeholder="секрет админки"
             />
           </label>
           {error && <p className="owner__error">{error}</p>}
@@ -369,10 +363,6 @@ function AdminLogin({
             {busy ? "Проверяем…" : "Войти"}
           </button>
         </form>
-        <p className="owner__hint">
-          Ссылка нигде не публикуется: только у команды. Секрет — в переменной
-          окружения backend.
-        </p>
       </div>
     </main>
   );
