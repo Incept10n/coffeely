@@ -259,7 +259,7 @@ function Landing() {
             </ol>
             <a className="button button--wide" href={APK_URL}>
               Скачать APK
-              <span className="button__hint">последняя сборка из main</span>
+              <span className="button__hint">последняя сборка</span>
             </a>
           </div>
         </section>
