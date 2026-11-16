@@ -1,6 +1,6 @@
 // Package email — отправка писем через Exchange Web Services (EWS) с NTLM.
 //
-// Рабочий контур inceptech: Exchange на mail.inceptech.ru, ящик watchly@inceptech.ru,
+// Рабочий контур inceptech: Exchange на mail.inceptech.ru, ящик coffeely@inceptech.ru,
 // NTLM-аутентификация. exchangelib из примера заменён на прямой SOAP-вызов EWS
 // CreateItem(SendAndSaveCopy): так же ходит Python-библиотека, только без лишних
 // зависимостей — один NTLM-roundtripper.

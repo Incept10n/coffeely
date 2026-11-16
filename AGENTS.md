@@ -107,7 +107,7 @@
 - Секреты прода — OpenBao `secret/coffeely` (`password`, `jwt_secret`,
   `admin_crm_secret`, `mail_password`) → ExternalSecret собирает `DATABASE_URL`,
   `POSTGRES_PASSWORD`, `JWT_SECRET`, `ADMIN_CRM_SECRET`, `MAIL_PASSWORD` в
-  `coffeely-secrets`. `mail_password` — пароль ящика `watchly@inceptech.ru` для
+  `coffeely-secrets`. `mail_password` — пароль ящика `coffeely@inceptech.ru` для
   EWS/NTLM; без него backend в prod не стартует (подтверждение email обязательно).
   При добавлении любого ключа сначала записать его в OpenBao, потом обновлять
   ExternalSecret/Deployment — иначе синк упадёт на отсутствующем ключе.

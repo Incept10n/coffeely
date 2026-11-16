@@ -7,7 +7,7 @@ import type { FormEvent, ReactNode } from "react";
 
 const API = "/api";
 const SECRET_KEY = "coffeely.admin.secret";
-const CONTACT = "hello@inceptech.ru";
+const CONTACT = "coffeely@inceptech.ru";
 
 class ApiError extends Error {
   status: number;

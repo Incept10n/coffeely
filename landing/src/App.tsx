@@ -5,7 +5,7 @@ import AdminPanel from "./Admin";
 // APK публикуется CI-пайплайном в S3 (seaweedfs, https://s3.inceptech.ru).
 // Объект перезаписывается каждой сборкой из main, поэтому ссылка стабильная.
 const APK_URL = "https://s3.inceptech.ru/coffeely/coffeely.apk";
-const CONTACT = "hello@inceptech.ru";
+const CONTACT = "coffeely@inceptech.ru";
 
 // API живёт на том же домене под префиксом /api (nginx срезает префикс).
 const API = "/api";

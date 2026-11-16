@@ -75,9 +75,9 @@ func Load() (Config, error) {
 		AdminCRMSecret: os.Getenv("ADMIN_CRM_SECRET"),
 
 		MailEWSURL:             envOr("MAIL_EWS_URL", "https://mail.inceptech.ru/EWS/Exchange.asmx"),
-		MailUsername:           envOr("MAIL_USERNAME", "watchly@inceptech.ru"),
+		MailUsername:           envOr("MAIL_USERNAME", "coffeely@inceptech.ru"),
 		MailPassword:           os.Getenv("MAIL_PASSWORD"),
-		MailFrom:               envOr("MAIL_FROM", "watchly@inceptech.ru"),
+		MailFrom:               envOr("MAIL_FROM", "coffeely@inceptech.ru"),
 		MailFromName:           envOr("MAIL_FROM_NAME", "coffeely"),
 		MailInsecureSkipVerify: envBool("MAIL_INSECURE_SKIP_VERIFY", true),
 		MailTimeout:            envDuration("MAIL_TIMEOUT", 10*time.Second),

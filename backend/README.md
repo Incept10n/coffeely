@@ -49,9 +49,9 @@ go run ./cmd/migrate drop   # снести всё (только dev!)
 | `YANDEX_REDIRECT_URL` | `http://localhost:8080/auth/yandex/callback` | callback OAuth |
 | `ADMIN_CRM_SECRET` | пусто | строка входа во внутреннюю админку `/admin`; пусто — админка выключена (503) |
 | `MAIL_EWS_URL` | `https://mail.inceptech.ru/EWS/Exchange.asmx` | EWS-эндпоинт Exchange |
-| `MAIL_USERNAME` | `watchly@inceptech.ru` | ящик для NTLM-авторизации в Exchange |
+| `MAIL_USERNAME` | `coffeely@inceptech.ru` | ящик для NTLM-авторизации в Exchange |
 | `MAIL_PASSWORD` | пусто | пароль ящика; **в prod обязателен**; пусто — подтверждение email выключено (dev) |
-| `MAIL_FROM` | `watchly@inceptech.ru` | адрес отправителя в письме |
+| `MAIL_FROM` | `coffeely@inceptech.ru` | адрес отправителя в письме |
 | `MAIL_FROM_NAME` | `coffeely` | имя отправителя |
 | `MAIL_INSECURE_SKIP_VERIFY` | `true` | не проверять TLS-сертификат Exchange (внутренний сертификат; `false` — проверять) |
 | `MAIL_TIMEOUT` | `10s` | таймаут отправки письма |

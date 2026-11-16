@@ -10,7 +10,7 @@ import (
 
 func TestCreateItemEnvelope(t *testing.T) {
 	cfg := config.Config{
-		MailFrom:     "watchly@inceptech.ru",
+		MailFrom:     "coffeely@inceptech.ru",
 		MailFromName: "coffeely",
 	}
 	body := string(createItemEnvelope(cfg, "user@example.com", "Тема & <тест>", "<b>код 123456</b>"))
@@ -24,7 +24,7 @@ func TestCreateItemEnvelope(t *testing.T) {
 	for _, want := range []string{
 		`MessageDisposition="SendAndSaveCopy"`,
 		`<t:EmailAddress>user@example.com</t:EmailAddress>`,
-		`<t:EmailAddress>watchly@inceptech.ru</t:EmailAddress>`,
+		`<t:EmailAddress>coffeely@inceptech.ru</t:EmailAddress>`,
 		`<t:Name>coffeely</t:Name>`,
 		`BodyType="HTML"`,
 		"Тема &amp; &lt;тест&gt;",
