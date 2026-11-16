@@ -1,13 +1,19 @@
 package com.coffeely.mobile.ui
 
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import com.coffeely.mobile.BuildConfig
 import com.yandex.authsdk.YandexAuthLoginOptions
 import com.yandex.authsdk.YandexAuthOptions
@@ -40,11 +46,24 @@ actual fun YandexSignInButton(enabled: Boolean, onResult: (YandexSignInResult) -
         }
     }
 
-    OutlinedButton(
-        onClick = { launcher.launch(YandexAuthLoginOptions()) },
-        enabled = enabled,
+    // Разделитель живёт здесь, а не в общем экране: без ClientID кнопки нет,
+    // и одинокое «или» над формой выглядело бы поломкой.
+    Column(
         modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("Войти с Яндексом")
+        Text(
+            "или",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(
+            onClick = { launcher.launch(YandexAuthLoginOptions()) },
+            enabled = enabled,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Войти с Яндексом")
+        }
     }
 }

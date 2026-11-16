@@ -215,12 +215,6 @@ fun LoginScreen(api: ApiClient, onLoggedIn: (UserDto) -> Unit) {
                     // сервер сообщил, что он настроен. Токен выдаёт LoginSDK.
                     if (yandexAvailable) {
                         Spacer(Modifier.height(12.dp))
-                        Text(
-                            "или",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.height(8.dp))
                         YandexSignInButton(enabled = !yandexBusy) { result ->
                             when (result) {
                                 is YandexSignInResult.Success -> loginWithYandex(result.token)
