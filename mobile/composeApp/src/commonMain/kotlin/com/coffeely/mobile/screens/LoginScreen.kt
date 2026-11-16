@@ -39,6 +39,7 @@ import com.coffeely.mobile.api.ApiException
 import com.coffeely.mobile.api.AuthResponse
 import com.coffeely.mobile.api.TokenStore
 import com.coffeely.mobile.api.UserDto
+import com.coffeely.mobile.ui.ThemeModeButton
 import kotlinx.coroutines.launch
 
 // Вход/регистрация через реальный API бэкенда (M2): email+пароль, argon2id.
@@ -188,6 +189,7 @@ fun LoginScreen(api: ApiClient, onLoggedIn: (UserDto) -> Unit) {
                     ) {
                         Text("Регистрация нового клиента")
                     }
+                    ThemeModeButton(modifier = Modifier.fillMaxWidth())
                 }
                 if (!showRegister && verifyTarget == null) {
                     error?.let {

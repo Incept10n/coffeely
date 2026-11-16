@@ -51,6 +51,7 @@ import com.coffeely.mobile.api.hhmm
 import com.coffeely.mobile.api.isActive
 import com.coffeely.mobile.api.statusRu
 import com.coffeely.mobile.api.waitMinutes
+import com.coffeely.mobile.ui.ThemeModeButton
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -129,6 +130,7 @@ private fun PointsScreen(
             TopAppBar(
                 title = { Text("coffeely") },
                 actions = {
+                    ThemeModeButton()
                     TextButton(onClick = onOpenOrders) { Text("Мои заказы") }
                     TextButton(onClick = onLogout) { Text("Выйти") }
                 },

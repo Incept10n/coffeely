@@ -5,6 +5,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
 
 // Палитра coffeely: крем, латте, кофейный. Заполнены ВСЕ слоты схемы, потому что
@@ -107,8 +110,46 @@ private val DarkColors = darkColorScheme(
 
 @Composable
 fun CoffeelyTheme(content: @Composable () -> Unit) {
+    val dark = when (ThemePreference.mode) {
+        ThemeMode.SYSTEM -> isSystemInDarkTheme()
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+    }
+    // Иконки системных панелей обязаны совпадать с выбранной темой, а не с
+    // системной: иначе на светлой системе в тёмной теме статус-бар остаётся тёмным.
+    ApplySystemBarStyle(dark)
     MaterialTheme(
-        colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
+        colorScheme = if (dark) DarkColors else LightColors,
         content = content,
     )
 }
+
+// ThemeMode — выбор пользователя. SYSTEM по умолчанию: как в системе.
+enum class ThemeMode { SYSTEM, LIGHT, DARK }
+
+// ThemePreference — состояние на всё приложение. Compose перерисует дерево при
+// смене mode, поэтому переключатель темы работает сразу, без перезапуска.
+object ThemePreference {
+    var mode by mutableStateOf(ThemeMode.SYSTEM)
+        private set
+
+    fun restore() {
+        mode = ThemeStorage.load()
+    }
+
+    fun select(next: ThemeMode) {
+        if (next == mode) return
+        mode = next
+        ThemeStorage.save(next)
+    }
+}
+
+// Платформенное хранилище выбранной темы (SharedPreferences на Android).
+internal expect object ThemeStorage {
+    fun load(): ThemeMode
+    fun save(mode: ThemeMode)
+}
+
+// Переключение иконок статус-бара/навбара под выбранную тему.
+@Composable
+internal expect fun ApplySystemBarStyle(dark: Boolean)

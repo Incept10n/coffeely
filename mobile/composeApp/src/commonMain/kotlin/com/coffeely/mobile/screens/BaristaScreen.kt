@@ -56,6 +56,7 @@ import com.coffeely.mobile.api.QueueEntryDto
 import com.coffeely.mobile.api.hhmm
 import com.coffeely.mobile.api.statusKdsRu
 import com.coffeely.mobile.api.urgencyRu
+import com.coffeely.mobile.ui.ThemeModeButton
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -131,7 +132,10 @@ fun BaristaScreen(api: ApiClient, onLogout: () -> Unit) {
         topBar = {
             TopAppBar(
                 title = { Text("Бариста · борда") },
-                actions = { TextButton(onClick = onLogout) { Text("Выйти") } },
+                actions = {
+                    ThemeModeButton()
+                    TextButton(onClick = onLogout) { Text("Выйти") }
+                },
             )
         },
     ) { padding ->

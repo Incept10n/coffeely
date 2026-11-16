@@ -7,6 +7,8 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import com.coffeely.mobile.api.SessionStorage
+import com.coffeely.mobile.ui.ThemePreference
+import com.coffeely.mobile.ui.ThemeStorage
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -23,6 +25,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // Хранилище сессии нужно до первого экрана: гость не логинится заново.
         SessionStorage.init(this)
+        // Тема — до первого кадра, иначе при тёмной теме мелькнёт кремовый фон.
+        ThemeStorage.init(this)
+        ThemePreference.restore()
         setContent { App() }
     }
 }

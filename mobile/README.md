@@ -15,7 +15,7 @@ Kotlin Multiplatform + Compose Multiplatform. Android — первый рели�
     «Взять в работу / Готов / Выдан», realtime по WebSocket.
 - Сессия сохраняется на устройстве (SharedPreferences): при следующем запуске гость
   сразу видит свои заказы, access-токен продлевается по refresh.
-- Тема coffeely (Material 3).
+- Тема coffeely (Material 3), выбор системная/светлая/тёмная — сохраняется на устройстве.
 
 ## Структура
 
