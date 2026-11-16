@@ -115,6 +115,7 @@ function Landing() {
           <nav className="top__nav">
             <a href="/#how">Как это работает</a>
             <a href="/#shops">Для кофеен</a>
+            <a href="/owner">Кабинет владельца</a>
             <a className="top__cta" href="/#download">
               Скачать
             </a>
@@ -140,8 +141,8 @@ function Landing() {
                   Скачать приложение
                   <span className="button__hint">APK · Android 8.0+</span>
                 </a>
-                <a className="button button--ghost" href="/owner/register">
-                  Я владелец кофейни
+                <a className="button button--ghost" href="/owner">
+                  Создать или войти в кабинет бесплатно
                 </a>
               </div>
               <p className="fineprint">
@@ -232,8 +233,8 @@ function Landing() {
                 на сайте.
               </p>
             </div>
-            <a className="button button--light" href="/owner/register">
-              Создать кабинет бесплатно
+            <a className="button button--light" href="/owner">
+              Создать или войти в кабинет бесплатно
             </a>
           </div>
         </section>
