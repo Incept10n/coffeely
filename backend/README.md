@@ -26,7 +26,8 @@ SQL up/down в `backend/migrations/`; users (роли client/barista; owner —
 только для сайта, в приложение не входит), points (capacity_config, owner_id —
 владелец точки), barista_points (привязка баристы к точке), menu_items,
 orders (deadline_at — ядро AIK-11), order_items, order_events (журнал для
-метрик дедлайнов, AIK-14 §6). Invite-коды удалены в 000004.
+метрик дедлайнов, AIK-14 §6). Invite-коды удалены в 000004. 000005 — индексы
+под аналитику внутренней админки (/admin).
 
 ```sh
 make migrate        # вверх до конца
@@ -46,6 +47,7 @@ go run ./cmd/migrate drop   # снести всё (только dev!)
 | `REFRESH_TOKEN_TTL` | `720h` | срок жизни refresh-токена (30 дней) |
 | `YANDEX_CLIENT_ID` / `YANDEX_CLIENT_SECRET` | пусто | OAuth2 Yandex ID |
 | `YANDEX_REDIRECT_URL` | `http://localhost:8080/auth/yandex/callback` | callback OAuth |
+| `ADMIN_CRM_SECRET` | пусто | строка входа во внутреннюю админку `/admin`; пусто — админка выключена (503) |
 
 ## Логирование
 
@@ -81,10 +83,13 @@ go run ./cmd/migrate drop   # снести всё (только dev!)
 | GET | `/admin/points` | Bearer owner | точки владельца |
 | POST | `/admin/baristas` | Bearer owner | создать рабочий аккаунт баристы на свою точку |
 | GET | `/admin/baristas` | Bearer owner | список бариста по точкам владельца |
+| POST | `/internal/admin/login` | `X-Admin-Secret` / тело `{secret}` | проверка строки доступа внутренней админки (limiter: 20 попыток / 15 мин на IP) |
+| GET | `/internal/admin/analytics?days=30` | `X-Admin-Secret` | сводная аналитика платформы для создателей: деньги, заказы, дедлайны, точки, владельцы, бариста, активация |
 
 Каналы разведены: `/auth/*` — приложение (клиент и бариста), `/owners/*` и
-`/admin/*` — сайт (только владелец). Владелец не входит в приложение
-(`/auth/login` для owner отвечает 403).
+`/admin/*` — сайт (только владелец), `/internal/admin/*` — внутренняя админка
+создателей (общий секрет, без пользователей и ролей). Владелец не входит в
+приложение (`/auth/login` для owner отвечает 403).
 
 ### Движок ёмкости (v2, без выбора окон)
 
@@ -147,6 +152,7 @@ internal/db/      — pgxpool, подключение к БД
 internal/server/  — сборка маршрутов + e2e-тесты
 internal/auth/    — argon2id, JWT access+refresh, Yandex ID, middleware ролей
 internal/admin/   — кабинет владельца: точки, рабочие аккаунты бариста
+internal/superadmin/ — внутренняя админка создателей (/admin): вход по секрету, аналитика
 internal/httpx/   — JSON-помощники, API-ошибки
 internal/orders/  — (M3/M4) заказы, статусы, KDS-очередь
 internal/points/  — (M4) точки, меню

@@ -19,8 +19,8 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
-	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/jackc/pgx/v5/pgxpool"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "github.com/lib/pq"
 
 	"github.com/Incept10n/coffeely/backend/internal/config"
@@ -109,6 +109,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		YandexAuthURL:      mock.URL + "/authorize",
 		YandexTokenURL:     mock.URL + "/token",
 		YandexInfoURL:      mock.URL + "/info",
+		AdminCRMSecret:     "test-admin-secret",
 	}
 
 	return &testEnv{

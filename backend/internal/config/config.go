@@ -32,6 +32,10 @@ type Config struct {
 	YandexAuthURL      string // YANDEX_AUTH_URL
 	YandexTokenURL     string // YANDEX_TOKEN_URL
 	YandexInfoURL      string // YANDEX_INFO_URL
+
+	// AdminCRMSecret — строка доступа во внутреннюю админку создателей (/admin).
+	// Общий секрет: вход без пользователей и ролей. Не задан — админка выключена.
+	AdminCRMSecret string // ADMIN_CRM_SECRET
 }
 
 // Load читает окружение и проверяет обязательные значения.
@@ -51,6 +55,8 @@ func Load() (Config, error) {
 		YandexAuthURL:      envOr("YANDEX_AUTH_URL", "https://oauth.yandex.ru/authorize"),
 		YandexTokenURL:     envOr("YANDEX_TOKEN_URL", "https://oauth.yandex.ru/token"),
 		YandexInfoURL:      envOr("YANDEX_INFO_URL", "https://login.yandex.ru/info"),
+
+		AdminCRMSecret: os.Getenv("ADMIN_CRM_SECRET"),
 	}
 
 	if cfg.Port == "" {

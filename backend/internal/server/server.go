@@ -14,6 +14,7 @@ import (
 	"github.com/Incept10n/coffeely/backend/internal/httpx"
 	"github.com/Incept10n/coffeely/backend/internal/orders"
 	"github.com/Incept10n/coffeely/backend/internal/points"
+	"github.com/Incept10n/coffeely/backend/internal/superadmin"
 )
 
 // New собирает mux со всеми маршрутами; каждый запрос пишется в stdout.
@@ -66,6 +67,13 @@ func New(pool *pgxpool.Pool, cfg config.Config) http.Handler {
 	mux.Handle("GET /admin/points", ownerOnly(http.HandlerFunc(adminHandlers.ListPoints)))
 	mux.Handle("POST /admin/baristas", ownerOnly(http.HandlerFunc(adminHandlers.CreateBarista)))
 	mux.Handle("GET /admin/baristas", ownerOnly(http.HandlerFunc(adminHandlers.ListBaristas)))
+
+	// Внутренняя админка создателей бизнеса: /admin на сайте, вход по общему
+	// секрету ADMIN_CRM_SECRET (не путать с кабинетом владельца /admin/*).
+	superHandlers := superadmin.NewHandlers(superadmin.NewStore(pool), cfg.AdminCRMSecret)
+	mux.HandleFunc("POST /internal/admin/login", superHandlers.Login)
+	mux.Handle("GET /internal/admin/analytics",
+		superHandlers.RequireSecret(http.HandlerFunc(superHandlers.Analytics)))
 
 	// Заказы, KDS-очередь, realtime (M3) + клиентский флоу (M4)
 	pointsStore := points.NewStore(pool)

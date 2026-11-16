@@ -12,7 +12,10 @@
 - `landing/` — лендинг + личный кабинет владельца (Vite + React → nginx) на https://coffeely.inceptech.ru, раздаёт APK из S3.
 - `deploy/` — Docker Compose, VPS РФ, Caddy, TLS (запасной путь; прод — Kubernetes).
 - `.github/workflows/ci.yml` — тесты, Docker-образы в Docker Hub, сборка APK в S3.
-- CRM и биллинг для владельцев — **отдельный репозиторий** (`devops/coffeely-crm`), тот же API. Здесь его не делать.
+- CRM и биллинг для владельцев (клиентов бизнеса) — **отдельный репозиторий**
+  (`devops/coffeely-crm`), тот же API. Здесь его не делать. Внутренняя админка
+  создателей coffeely (`/admin`, секрет `ADMIN_CRM_SECRET`) — не этот CRM, она
+  живёт здесь: `internal/superadmin` + `landing/src/Admin.tsx`.
 
 ## Ролевая модель (v2, 2026-11-16)
 
@@ -27,6 +30,11 @@
   `points.owner_id` — точки seed'а без владельца видны в приложении, но не в кабинете.
 - На витрине лендинга **цен нет** — только «предложения в личном кабинете,
   создать бесплатно». Цены показываются только в кабинете.
+- **Внутренняя админка создателей** — `/admin` на лендинге, вход по общему
+  секрету `ADMIN_CRM_SECRET` (заголовок `X-Admin-Secret`, limiter 20 попыток /
+  15 мин на IP). API — `/internal/admin/*`, только чтение сводной аналитики:
+  деньги, заказы, дедлайны, нагрузка по часам, точки, владельцы, бариста,
+  активация, CSV. Пустой секрет = админка выключена (503). Ссылка не публикуется.
 
 ## База знаний бизнеса — YouGile `ai-knowlege` (MCP)
 
@@ -90,8 +98,11 @@
 - В кластер ничего не деплоим из этого репо. ArgoCD (репозиторий `Incept10n/inceptech`,
   `apps/coffeely`) тянет мутабельные теги с `imagePullPolicy: Always`; после нового
   образа нужен `kubectl rollout restart deployment/backend -n coffeely`.
-- Секреты прода — OpenBao `secret/coffeely` (`password`, `jwt_secret`) → ExternalSecret
-  собирает `DATABASE_URL`, `POSTGRES_PASSWORD`, `JWT_SECRET` в `coffeely-secrets`.
+- Секреты прода — OpenBao `secret/coffeely` (`password`, `jwt_secret`,
+  `admin_crm_secret`) → ExternalSecret собирает `DATABASE_URL`,
+  `POSTGRES_PASSWORD`, `JWT_SECRET`, `ADMIN_CRM_SECRET` в `coffeely-secrets`.
+  При добавлении `ADMIN_CRM_SECRET` сначала записать ключ в OpenBao, потом
+  обновлять ExternalSecret/Deployment — иначе синк упадёт на отсутствующем ключе.
 - Домен: `coffeely.inceptech.ru` — лендинг на `/`, API и WebSocket на `/api`
   (nginx срезает префикс перед проксированием в backend);
   TLS — cert-manager, конфиг nginx-LB в репозитории `nginx-inceptech-loadblalancer`.
@@ -108,7 +119,9 @@ curl http://localhost:8080/healthz
 
 Прод запущен: `https://coffeely.inceptech.ru` (лендинг + API; Kubernetes, ArgoCD, OpenBao).
 Закрыты M1–M9; ролевая модель v2 (приложение/сайт) реализована, KDS-борда баристы
-(категории по статусам, цвета, архив дня) сделана — изменения в коде пока
+(категории по статусам, цвета, архив дня) сделана. Добавлены: окно регистрации в
+приложении (кнопка активна всегда) и внутренняя админка создателей `/admin`
+(секрет `ADMIN_CRM_SECRET`, аналитика платформы). Изменения в коде пока
 НЕ закоммичены, коммит и push только по явной команде пользователя, затем CI и рестарт
 `deployment backend` / `deployment frontend` (`-n coffeely`) руками пользователя.
 

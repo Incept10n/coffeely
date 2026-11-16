@@ -9,8 +9,8 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	_ "time/tzdata" // встроенная база таймзон (для контейнеров)
 	"time"
+	_ "time/tzdata" // встроенная база таймзон (для контейнеров)
 
 	"github.com/Incept10n/coffeely/backend/internal/config"
 	"github.com/Incept10n/coffeely/backend/internal/db"
@@ -35,6 +35,9 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("db connected")
+	if cfg.AdminCRMSecret == "" {
+		logger.Warn("ADMIN_CRM_SECRET не задан — внутренняя админка /admin отключена")
+	}
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,

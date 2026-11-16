@@ -105,16 +105,22 @@ func newRequestID() string {
 	return hex.EncodeToString(b[:])
 }
 
+// ClientIP — IP клиента за прокси (X-Forwarded-For / X-Real-IP / RemoteAddr).
+// Экспортирован: его используют лимитеры доступа (админка).
+func ClientIP(r *http.Request) string { return clientIP(r) }
+
 func clientIP(r *http.Request) string {
-	// За nginx: X-Forwarded-For / X-Real-IP; локально — RemoteAddr.
+	// За nginx: X-Real-IP выставляет сам прокси ($remote_addr) — ему доверяем
+	// первым. X-Forwarded-For клиент может подделать (nginx только дописывает),
+	// поэтому он — запасной вариант и берётся первым значением.
+	if ip := r.Header.Get("X-Real-IP"); ip != "" {
+		return strings.TrimSpace(ip)
+	}
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		if i := strings.IndexByte(xff, ','); i > 0 {
 			return strings.TrimSpace(xff[:i])
 		}
 		return strings.TrimSpace(xff)
-	}
-	if ip := r.Header.Get("X-Real-IP"); ip != "" {
-		return ip
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

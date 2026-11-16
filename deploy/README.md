@@ -24,9 +24,10 @@ cd /srv/coffeely/deploy
 
 # 2. Конфиг (сгенерировать секреты)
 cp .env.prod.example .env.prod && chmod 600 .env.prod
-#   POSTGRES_PASSWORD: openssl rand -base64 32
-#   JWT_SECRET:        openssl rand -base64 48
-#   DOMAIN + YANDEX_*: заполнить
+#   POSTGRES_PASSWORD:  openssl rand -base64 32
+#   JWT_SECRET:         openssl rand -base64 48
+#   ADMIN_CRM_SECRET:   openssl rand -base64 48  (вход в /admin)
+#   DOMAIN + YANDEX_*:  заполнить
 
 # 3. Поднять
 docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build

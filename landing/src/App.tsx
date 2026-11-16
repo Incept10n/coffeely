@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
+import AdminPanel from "./Admin";
 
 // APK публикуется CI-пайплайном в S3 (seaweedfs, https://s3.inceptech.ru).
 // Объект перезаписывается каждой сборкой из main, поэтому ссылка стабильная.
@@ -56,10 +57,12 @@ function authResponse(tokens: { access_token: string; refresh_token: string }): 
 }
 
 // Роутинг лендинга: / — витрина, /owner/register — регистрация владельца,
-// /owner — личный кабинет (тарифы, точки, бариста). SPA-fallback отдаёт
-// index.html на любой путь (nginx try_files).
+// /owner — личный кабинет (тарифы, точки, бариста), /admin — внутренняя
+// админка создателей (сводная аналитика, вход по ADMIN_CRM_SECRET).
+// SPA-fallback отдаёт index.html на любой путь (nginx try_files).
 export default function App() {
   const path = window.location.pathname;
+  if (path.startsWith("/admin")) return <AdminPanel />;
   if (path.startsWith("/owner/register")) return <OwnerRegister />;
   if (path.startsWith("/owner")) return <OwnerCabinet />;
   return <Landing />;

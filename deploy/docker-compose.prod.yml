@@ -46,6 +46,7 @@ services:
       YANDEX_CLIENT_ID: ${YANDEX_CLIENT_ID:-}
       YANDEX_CLIENT_SECRET: ${YANDEX_CLIENT_SECRET:-}
       YANDEX_REDIRECT_URL: ${YANDEX_REDIRECT_URL:-https://${DOMAIN}/auth/yandex/callback}
+      ADMIN_CRM_SECRET: ${ADMIN_CRM_SECRET:-}
     depends_on:
       db:
         condition: service_healthy
