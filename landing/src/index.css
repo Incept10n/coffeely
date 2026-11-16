@@ -137,7 +137,7 @@ p {
   color: var(--muted);
 }
 
-.top__nav a:hover {
+.top__nav a:not(.top__cta):hover {
   color: var(--espresso);
 }
 
@@ -787,6 +787,12 @@ p {
   color: inherit;
   cursor: pointer;
   padding: 0;
+}
+
+.top__cta--button:hover {
+  background: none;
+  color: var(--espresso);
+  opacity: 1;
 }
 
 /* ----------------- Внутренняя админка создателей (/admin) ----------------- */
