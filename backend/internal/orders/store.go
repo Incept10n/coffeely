@@ -54,18 +54,38 @@ type Order struct {
 	SlotStart  time.Time `json:"pickup_slot_start"`
 	SlotEnd    time.Time `json:"pickup_slot_end"`
 	// Deadline — когда заказ должен быть готов. Клиент видит его как «готов к HH:MM».
-	Deadline   time.Time `json:"deadline_at"`
-	TotalMinor int64     `json:"total_minor"`
-	CreatedAt  time.Time `json:"created_at"`
-	Items      []Item    `json:"items,omitempty"`
+	Deadline time.Time `json:"deadline_at"`
+	// AcceptBy — к какому времени бариста должен взять заказ (ETA точки).
+	AcceptBy time.Time `json:"accept_by_at"`
+	// AcceptInSeconds — сколько секунд осталось до AcceptBy на момент ответа;
+	// отрицательное значение — бариста уже опоздал. Считается при выдаче API.
+	AcceptInSeconds int64     `json:"accept_in_seconds"`
+	TotalMinor      int64     `json:"total_minor"`
+	CreatedAt       time.Time `json:"created_at"`
+	Items           []Item    `json:"items,omitempty"`
 }
 
 // Item — позиция заказа.
 type Item struct {
-	MenuItemID string `json:"menu_item_id"`
+	MenuItemID string      `json:"menu_item_id"`
+	Title      string      `json:"title"`
+	Qty        int         `json:"qty"`
+	PriceMinor int64       `json:"price_minor"`
+	Addons     []ItemAddon `json:"addons,omitempty"`
+}
+
+// ItemAddon — снимок добавки в позиции заказа (название и цена на момент заказа).
+type ItemAddon struct {
+	AddonID    string `json:"addon_id,omitempty"`
 	Title      string `json:"title"`
-	Qty        int    `json:"qty"`
 	PriceMinor int64  `json:"price_minor"`
+}
+
+// CreateItem — позиция нового заказа от клиента: напиток, количество и добавки.
+type CreateItem struct {
+	MenuItemID string
+	Qty        int
+	AddonIDs   []string
 }
 
 // SlotPlanner — движок ёмкости точки (points.Store.PlanSlot).
@@ -86,7 +106,8 @@ func NewStore(pool *pgxpool.Pool, planner SlotPlanner) *Store {
 // Окно производства не приходит от клиента: его назначает движок ёмкости —
 // ближайшее окно, в котором точка успеет сделать заказ после текущей очереди.
 // deadline_at = начало окна − сумма prep_seconds (ядро AIK-11).
-func (s *Store) Create(ctx context.Context, pointID, clientID string, items []Item, now time.Time) (Order, error) {
+// accept_by_at = сейчас + ETA точки «бариста возьмёт заказ».
+func (s *Store) Create(ctx context.Context, pointID, clientID string, items []CreateItem, now time.Time) (Order, error) {
 	if len(items) == 0 {
 		return Order{}, ErrEmptyOrder
 	}
@@ -99,9 +120,10 @@ func (s *Store) Create(ctx context.Context, pointID, clientID string, items []It
 
 	// Блокируем точку: она же сериализует назначение окон.
 	var pointActive bool
+	var capacityRaw []byte
 	if err := tx.QueryRow(ctx,
-		`SELECT is_active FROM points WHERE id = $1 FOR UPDATE`, pointID,
-	).Scan(&pointActive); err != nil {
+		`SELECT is_active, capacity_config FROM points WHERE id = $1 FOR UPDATE`, pointID,
+	).Scan(&pointActive, &capacityRaw); err != nil {
 		if err == pgx.ErrNoRows {
 			return Order{}, ErrPointNotFound
 		}
@@ -113,6 +135,19 @@ func (s *Store) Create(ctx context.Context, pointID, clientID string, items []It
 
 	var ownPrep time.Duration
 	var total int64
+	type lineAddon struct {
+		AddonID    string
+		Title      string
+		PriceMinor int64
+		Prep       int
+	}
+	type line struct {
+		MenuID string
+		Qty    int
+		Price  int64
+		Addons []lineAddon
+	}
+	lines := make([]line, 0, len(items))
 	for _, it := range items {
 		if it.Qty <= 0 {
 			return Order{}, ErrEmptyOrder
@@ -131,6 +166,25 @@ func (s *Store) Create(ctx context.Context, pointID, clientID string, items []It
 		}
 		total += price * int64(it.Qty)
 		ownPrep += time.Duration(prep*it.Qty) * time.Second
+
+		l := line{MenuID: it.MenuItemID, Qty: it.Qty, Price: price}
+		for _, addonID := range it.AddonIDs {
+			var a lineAddon
+			err := tx.QueryRow(ctx, `
+				SELECT id, title, price_minor, prep_seconds FROM addons
+				WHERE id = $1 AND point_id = $2 AND is_available`, addonID, pointID,
+			).Scan(&a.AddonID, &a.Title, &a.PriceMinor, &a.Prep)
+			if err != nil {
+				if err == pgx.ErrNoRows {
+					return Order{}, fmt.Errorf("%w: addon %s", ErrMenuItemNotFound, addonID)
+				}
+				return Order{}, fmt.Errorf("orders: addon: %w", err)
+			}
+			total += a.PriceMinor * int64(it.Qty)
+			ownPrep += time.Duration(a.Prep*it.Qty) * time.Second
+			l.Addons = append(l.Addons, a)
+		}
+		lines = append(lines, l)
 	}
 
 	plan, err := s.planner(ctx, tx, pointID, ownPrep, now)
@@ -140,25 +194,37 @@ func (s *Store) Create(ctx context.Context, pointID, clientID string, items []It
 
 	o := Order{
 		PointID: pointID, ClientID: clientID, Status: StatusPaid,
-		SlotStart: plan.Start, SlotEnd: plan.End, Deadline: plan.Deadline, TotalMinor: total,
+		SlotStart: plan.Start, SlotEnd: plan.End, Deadline: plan.Deadline,
+		AcceptBy: now.Add(points.AcceptETA(capacityRaw)), TotalMinor: total,
 	}
 	err = tx.QueryRow(ctx, `
-		INSERT INTO orders (point_id, client_id, status, pickup_slot_start, pickup_slot_end, deadline_at, total_minor)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO orders (point_id, client_id, status, pickup_slot_start, pickup_slot_end, deadline_at, accept_by_at, total_minor)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id, order_number, created_at`,
-		pointID, clientID, StatusPaid, plan.Start, plan.End, plan.Deadline, total,
+		pointID, clientID, StatusPaid, plan.Start, plan.End, plan.Deadline, o.AcceptBy, total,
 	).Scan(&o.ID, &o.Number, &o.CreatedAt)
 	if err != nil {
 		return Order{}, fmt.Errorf("orders: insert: %w", err)
 	}
 
-	for _, it := range items {
-		if _, err := tx.Exec(ctx, `
+	for _, l := range lines {
+		var orderItemID string
+		if err := tx.QueryRow(ctx, `
 			INSERT INTO order_items (order_id, menu_item_id, qty, price_minor)
-			SELECT $1, mi.id, $2, mi.price_minor FROM menu_items mi WHERE mi.id = $3`,
-			o.ID, it.Qty, it.MenuItemID,
-		); err != nil {
+			VALUES ($1, $2, $3, $4)
+			RETURNING id`,
+			o.ID, l.MenuID, l.Qty, l.Price,
+		).Scan(&orderItemID); err != nil {
 			return Order{}, fmt.Errorf("orders: insert item: %w", err)
+		}
+		for _, a := range l.Addons {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO order_item_addons (order_item_id, addon_id, title, price_minor, prep_seconds)
+				VALUES ($1, $2, $3, $4, $5)`,
+				orderItemID, a.AddonID, a.Title, a.PriceMinor, a.Prep,
+			); err != nil {
+				return Order{}, fmt.Errorf("orders: insert addon: %w", err)
+			}
 		}
 	}
 
@@ -176,6 +242,7 @@ func (s *Store) Create(ctx context.Context, pointID, clientID string, items []It
 	if err != nil {
 		return Order{}, err
 	}
+	o.computeEta(time.Now())
 	return o, nil
 }
 
@@ -186,7 +253,8 @@ func (s *Store) ListByClient(ctx context.Context, clientID string, limit int) ([
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT o.id, o.order_number, o.point_id, COALESCE(p.title, ''), o.client_id, o.status,
-		       o.pickup_slot_start, o.pickup_slot_end, o.deadline_at, o.total_minor, o.created_at
+		       o.pickup_slot_start, o.pickup_slot_end, o.deadline_at, o.accept_by_at,
+		       o.total_minor, o.created_at
 		FROM orders o
 		LEFT JOIN points p ON p.id = o.point_id
 		WHERE o.client_id = $1
@@ -201,7 +269,7 @@ func (s *Store) ListByClient(ctx context.Context, clientID string, limit int) ([
 	for rows.Next() {
 		var o Order
 		if err := rows.Scan(&o.ID, &o.Number, &o.PointID, &o.PointTitle, &o.ClientID, &o.Status,
-			&o.SlotStart, &o.SlotEnd, &o.Deadline, &o.TotalMinor, &o.CreatedAt); err != nil {
+			&o.SlotStart, &o.SlotEnd, &o.Deadline, &o.AcceptBy, &o.TotalMinor, &o.CreatedAt); err != nil {
 			return nil, fmt.Errorf("orders: scan: %w", err)
 		}
 		out = append(out, o)
@@ -209,10 +277,12 @@ func (s *Store) ListByClient(ctx context.Context, clientID string, limit int) ([
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	now := time.Now()
 	for i := range out {
 		if out[i].Items, err = s.items(ctx, out[i].ID); err != nil {
 			return nil, err
 		}
+		out[i].computeEta(now)
 	}
 	return out, nil
 }
@@ -221,7 +291,8 @@ func (s *Store) ListByClient(ctx context.Context, clientID string, limit int) ([
 func (s *Store) ByID(ctx context.Context, id string) (Order, error) {
 	o, err := s.scanOrder(s.pool.QueryRow(ctx, `
 		SELECT id, order_number, point_id, client_id, status,
-		       pickup_slot_start, pickup_slot_end, deadline_at, total_minor, created_at
+		       pickup_slot_start, pickup_slot_end, deadline_at, accept_by_at,
+		       total_minor, created_at
 		FROM orders WHERE id = $1`, id))
 	if err != nil {
 		return Order{}, err
@@ -230,6 +301,7 @@ func (s *Store) ByID(ctx context.Context, id string) (Order, error) {
 	if err != nil {
 		return Order{}, err
 	}
+	o.computeEta(time.Now())
 	return o, nil
 }
 
@@ -237,7 +309,8 @@ func (s *Store) ByID(ctx context.Context, id string) (Order, error) {
 func (s *Store) QueueOfPoint(ctx context.Context, pointID string) ([]Order, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, order_number, point_id, client_id, status,
-		       pickup_slot_start, pickup_slot_end, deadline_at, total_minor, created_at
+		       pickup_slot_start, pickup_slot_end, deadline_at, accept_by_at,
+		       total_minor, created_at
 		FROM orders
 		WHERE point_id = $1 AND status IN ($2, $3, $4)
 		ORDER BY deadline_at`,
@@ -248,6 +321,7 @@ func (s *Store) QueueOfPoint(ctx context.Context, pointID string) ([]Order, erro
 	}
 	defer rows.Close()
 
+	now := time.Now()
 	var out []Order
 	for rows.Next() {
 		o, err := s.scanOrder(rows)
@@ -257,6 +331,7 @@ func (s *Store) QueueOfPoint(ctx context.Context, pointID string) ([]Order, erro
 		if o.Items, err = s.items(ctx, o.ID); err != nil {
 			return nil, err
 		}
+		o.computeEta(now)
 		out = append(out, o)
 	}
 	return out, rows.Err()
@@ -271,7 +346,8 @@ func (s *Store) HistoryOfPoint(ctx context.Context, pointID string, limit int) (
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT o.id, o.order_number, o.point_id, o.client_id, o.status,
-		       o.pickup_slot_start, o.pickup_slot_end, o.deadline_at, o.total_minor, o.created_at
+		       o.pickup_slot_start, o.pickup_slot_end, o.deadline_at, o.accept_by_at,
+		       o.total_minor, o.created_at
 		FROM orders o
 		JOIN points p ON p.id = o.point_id
 		WHERE o.point_id = $1
@@ -291,6 +367,7 @@ func (s *Store) HistoryOfPoint(ctx context.Context, pointID string, limit int) (
 	}
 	defer rows.Close()
 
+	now := time.Now()
 	out := make([]Order, 0, limit)
 	for rows.Next() {
 		o, err := s.scanOrder(rows)
@@ -300,6 +377,7 @@ func (s *Store) HistoryOfPoint(ctx context.Context, pointID string, limit int) (
 		if o.Items, err = s.items(ctx, o.ID); err != nil {
 			return nil, err
 		}
+		o.computeEta(now)
 		out = append(out, o)
 	}
 	return out, rows.Err()
@@ -402,7 +480,7 @@ func (s *Store) Metrics(ctx context.Context, pointID string, day time.Time) (onT
 func (s *Store) scanOrder(row pgx.Row) (Order, error) {
 	var o Order
 	err := row.Scan(&o.ID, &o.Number, &o.PointID, &o.ClientID, &o.Status,
-		&o.SlotStart, &o.SlotEnd, &o.Deadline, &o.TotalMinor, &o.CreatedAt)
+		&o.SlotStart, &o.SlotEnd, &o.Deadline, &o.AcceptBy, &o.TotalMinor, &o.CreatedAt)
 	if err == pgx.ErrNoRows {
 		return Order{}, ErrOrderNotFound
 	}
@@ -412,24 +490,60 @@ func (s *Store) scanOrder(row pgx.Row) (Order, error) {
 	return o, nil
 }
 
+// computeEta заполняет accept_in_seconds относительно now.
+func (o *Order) computeEta(now time.Time) {
+	if o.AcceptBy.IsZero() {
+		return
+	}
+	o.AcceptInSeconds = int64(o.AcceptBy.Sub(now) / time.Second)
+}
+
 func (s *Store) items(ctx context.Context, orderID string) ([]Item, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT oi.menu_item_id, mi.title, oi.qty, oi.price_minor
+		SELECT oi.id, oi.menu_item_id, mi.title, oi.qty, oi.price_minor
 		FROM order_items oi JOIN menu_items mi ON mi.id = oi.menu_item_id
-		WHERE oi.order_id = $1`, orderID)
+		WHERE oi.order_id = $1
+		ORDER BY oi.id`, orderID)
 	if err != nil {
 		return nil, fmt.Errorf("orders: items: %w", err)
 	}
 	defer rows.Close()
 	var out []Item
+	index := map[string]int{}
 	for rows.Next() {
+		var orderItemID string
 		var it Item
-		if err := rows.Scan(&it.MenuItemID, &it.Title, &it.Qty, &it.PriceMinor); err != nil {
+		if err := rows.Scan(&orderItemID, &it.MenuItemID, &it.Title, &it.Qty, &it.PriceMinor); err != nil {
 			return nil, fmt.Errorf("orders: scan item: %w", err)
 		}
+		index[orderItemID] = len(out)
 		out = append(out, it)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	addonRows, err := s.pool.Query(ctx, `
+		SELECT oia.order_item_id, COALESCE(oia.addon_id::text, ''), oia.title, oia.price_minor
+		FROM order_item_addons oia
+		JOIN order_items oi ON oi.id = oia.order_item_id
+		WHERE oi.order_id = $1
+		ORDER BY oia.title`, orderID)
+	if err != nil {
+		return nil, fmt.Errorf("orders: item addons: %w", err)
+	}
+	defer addonRows.Close()
+	for addonRows.Next() {
+		var orderItemID string
+		var a ItemAddon
+		if err := addonRows.Scan(&orderItemID, &a.AddonID, &a.Title, &a.PriceMinor); err != nil {
+			return nil, fmt.Errorf("orders: scan item addon: %w", err)
+		}
+		if i, ok := index[orderItemID]; ok {
+			out[i].Addons = append(out[i].Addons, a)
+		}
+	}
+	return out, addonRows.Err()
 }
 
 // jsonRaw — marshaled event payload для публикации в WS.

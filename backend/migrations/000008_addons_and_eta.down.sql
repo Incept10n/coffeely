@@ -1,0 +1,8 @@
+BEGIN;
+
+DROP TABLE IF EXISTS order_item_addons;
+DROP TABLE IF EXISTS addons;
+
+ALTER TABLE orders DROP COLUMN IF EXISTS accept_by_at;
+
+COMMIT;

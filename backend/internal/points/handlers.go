@@ -27,9 +27,15 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"points": list})
 }
 
-// GET /points/{id}/menu — меню точки.
+// GET /points/{id}/menu — меню точки и доступные добавки.
 func (h *Handlers) Menu(w http.ResponseWriter, r *http.Request) {
-	menu, err := h.store.Menu(r.Context(), r.PathValue("id"))
+	pointID := r.PathValue("id")
+	menu, err := h.store.Menu(r.Context(), pointID)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	addons, err := h.store.Addons(r.Context(), pointID)
 	if err != nil {
 		httpx.WriteError(w, err)
 		return
@@ -37,7 +43,10 @@ func (h *Handlers) Menu(w http.ResponseWriter, r *http.Request) {
 	if menu == nil {
 		menu = []MenuItem{}
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"menu": menu})
+	if addons == nil {
+		addons = []Addon{}
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"menu": menu, "addons": addons})
 }
 
 var timeNow = time.Now

@@ -86,6 +86,8 @@ func NewWithMailer(pool *pgxpool.Pool, cfg config.Config, mailer auth.CodeSender
 	mux.Handle("GET /admin/points/{id}/menu", ownerOnly(http.HandlerFunc(adminHandlers.ListMenu)))
 	mux.Handle("POST /admin/points/{id}/menu", ownerOnly(http.HandlerFunc(adminHandlers.CreateMenuItem)))
 	mux.Handle("PATCH /admin/menu/{id}", ownerOnly(http.HandlerFunc(adminHandlers.UpdateMenuItem)))
+	mux.Handle("POST /admin/points/{id}/addons", ownerOnly(http.HandlerFunc(adminHandlers.CreateAddon)))
+	mux.Handle("PATCH /admin/addons/{id}", ownerOnly(http.HandlerFunc(adminHandlers.UpdateAddon)))
 	mux.Handle("POST /admin/baristas", ownerOnly(http.HandlerFunc(adminHandlers.CreateBarista)))
 	mux.Handle("GET /admin/baristas", ownerOnly(http.HandlerFunc(adminHandlers.ListBaristas)))
 	mux.Handle("PATCH /admin/baristas/{id}", ownerOnly(http.HandlerFunc(adminHandlers.UpdateBarista)))

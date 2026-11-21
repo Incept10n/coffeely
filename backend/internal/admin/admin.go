@@ -23,6 +23,7 @@ var (
 	ErrEmailTaken      = httpx.NewError(409, "email_taken", "email занят")
 	ErrBaristaNotFound = httpx.NewError(404, "barista_not_found", "бариста не найден")
 	ErrMenuItemMissing = httpx.NewError(404, "menu_item_not_found", "позиция меню не найдена")
+	ErrAddonMissing    = httpx.NewError(404, "addon_not_found", "добавка не найдена")
 )
 
 // Point — точка кофейни владельца.
@@ -58,6 +59,22 @@ type MenuItem struct {
 	PriceMinor  int64  `json:"price_minor"`
 	PrepSeconds int    `json:"prep_seconds"`
 	IsAvailable bool   `json:"is_available"`
+}
+
+// Addon — добавка к напитку (сироп, овсяное молоко, доп. шот). Владелец ведёт
+// каталог добавок точки; гость выбирает их к позиции заказа.
+type Addon struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	PriceMinor  int64  `json:"price_minor"`
+	PrepSeconds int    `json:"prep_seconds"`
+	IsAvailable bool   `json:"is_available"`
+}
+
+// Break — перерыв в работе точки ("HH:MM" локального времени точки).
+type Break struct {
+	Start string `json:"start"`
+	End   string `json:"end"`
 }
 
 // Store — SQL для точек, меню и бариста владельца.
@@ -130,6 +147,8 @@ type PointPatch struct {
 	MaxOrdersPerWindow *int
 	WorkStart          *string
 	WorkEnd            *string
+	Breaks             *[]Break
+	AcceptETAMinutes   *int
 }
 
 // UpdatePoint — меняет название, адрес, активность и параметры ёмкости точки.
@@ -182,6 +201,12 @@ func (s *Store) UpdatePoint(ctx context.Context, ownerID, pointID string, patch 
 	}
 	if patch.WorkEnd != nil {
 		capacity["work_end"] = *patch.WorkEnd
+	}
+	if patch.Breaks != nil {
+		capacity["breaks"] = *patch.Breaks
+	}
+	if patch.AcceptETAMinutes != nil {
+		capacity["accept_eta_minutes"] = *patch.AcceptETAMinutes
 	}
 	if p.Capacity, err = json.Marshal(capacity); err != nil {
 		return p, fmt.Errorf("admin: capacity marshal: %w", err)
@@ -477,4 +502,112 @@ func (s *Store) UpdateMenuItem(ctx context.Context, ownerID, itemID string, patc
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// ListAddons — все добавки точки, включая скрытые.
+func (s *Store) ListAddons(ctx context.Context, ownerID, pointID string) ([]Addon, error) {
+	owned, err := s.PointOwnedBy(ctx, ownerID, pointID)
+	if err != nil {
+		return nil, fmt.Errorf("admin: addons owner check: %w", err)
+	}
+	if !owned {
+		return nil, ErrPointNotFound
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, title, price_minor, prep_seconds, is_available
+		FROM addons WHERE point_id = $1
+		ORDER BY title`, pointID)
+	if err != nil {
+		return nil, fmt.Errorf("admin: addons list: %w", err)
+	}
+	defer rows.Close()
+	items := []Addon{}
+	for rows.Next() {
+		var a Addon
+		if err := rows.Scan(&a.ID, &a.Title, &a.PriceMinor, &a.PrepSeconds, &a.IsAvailable); err != nil {
+			return nil, fmt.Errorf("admin: addons scan: %w", err)
+		}
+		items = append(items, a)
+	}
+	return items, rows.Err()
+}
+
+// CreateAddon — новая добавка точки.
+func (s *Store) CreateAddon(ctx context.Context, ownerID, pointID, title string, priceMinor int64, prepSeconds int) (Addon, error) {
+	var a Addon
+	owned, err := s.PointOwnedBy(ctx, ownerID, pointID)
+	if err != nil {
+		return a, fmt.Errorf("admin: addon owner check: %w", err)
+	}
+	if !owned {
+		return a, ErrPointNotFound
+	}
+	err = s.pool.QueryRow(ctx, `
+		INSERT INTO addons (point_id, title, price_minor, prep_seconds)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, title, price_minor, prep_seconds, is_available`,
+		pointID, title, priceMinor, prepSeconds,
+	).Scan(&a.ID, &a.Title, &a.PriceMinor, &a.PrepSeconds, &a.IsAvailable)
+	if err != nil {
+		return a, fmt.Errorf("admin: addon insert: %w", err)
+	}
+	return a, nil
+}
+
+// AddonPatch — частичное изменение добавки.
+type AddonPatch struct {
+	Title       *string
+	PriceMinor  *int64
+	PrepSeconds *int
+	IsAvailable *bool
+}
+
+// UpdateAddon — меняет название, цену, время приготовления или видимость.
+func (s *Store) UpdateAddon(ctx context.Context, ownerID, addonID string, patch AddonPatch) (Addon, error) {
+	var a Addon
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return a, fmt.Errorf("admin: addon update tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	err = tx.QueryRow(ctx, `
+		SELECT a.id, a.title, a.price_minor, a.prep_seconds, a.is_available
+		FROM addons a
+		JOIN points p ON p.id = a.point_id
+		WHERE a.id = $1 AND p.owner_id = $2
+		FOR UPDATE OF a`, addonID, ownerID,
+	).Scan(&a.ID, &a.Title, &a.PriceMinor, &a.PrepSeconds, &a.IsAvailable)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return a, ErrAddonMissing
+	}
+	if err != nil {
+		return a, fmt.Errorf("admin: addon update load: %w", err)
+	}
+
+	if patch.Title != nil {
+		a.Title = *patch.Title
+	}
+	if patch.PriceMinor != nil {
+		a.PriceMinor = *patch.PriceMinor
+	}
+	if patch.PrepSeconds != nil {
+		a.PrepSeconds = *patch.PrepSeconds
+	}
+	if patch.IsAvailable != nil {
+		a.IsAvailable = *patch.IsAvailable
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE addons
+		SET title = $2, price_minor = $3, prep_seconds = $4, is_available = $5
+		WHERE id = $1`,
+		a.ID, a.Title, a.PriceMinor, a.PrepSeconds, a.IsAvailable,
+	); err != nil {
+		return a, fmt.Errorf("admin: addon update: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return a, fmt.Errorf("admin: addon update commit: %w", err)
+	}
+	return a, nil
 }

@@ -350,11 +350,20 @@ function OwnerRegister() {
 
 /* ------------------------- Личный кабинет -------------------------------- */
 
+type Break = { start: string; end: string };
+
 type Point = {
   id: string;
   title: string;
   address: string;
-  capacity_config: { window_minutes: number; max_orders_per_window: number; work_start: string; work_end: string };
+  capacity_config: {
+    window_minutes?: number;
+    max_orders_per_window?: number;
+    work_start: string;
+    work_end: string;
+    breaks?: Break[];
+    accept_eta_minutes?: number;
+  };
   is_active: boolean;
 };
 
@@ -368,6 +377,14 @@ type Barista = {
 };
 
 type MenuItem = {
+  id: string;
+  title: string;
+  price_minor: number;
+  prep_seconds: number;
+  is_available: boolean;
+};
+
+type Addon = {
   id: string;
   title: string;
   price_minor: number;
@@ -488,6 +505,7 @@ function OwnerCabinet() {
           ))}
         </div>
         <AddPointForm
+          hasPoints={points.length > 0}
           onCreated={async (msg) => {
             setNotice(msg);
             const t = loadTokens();
@@ -578,66 +596,101 @@ function OwnerLogin({ onDone }: { onDone: () => void | Promise<void> }) {
   );
 }
 
+type MenuDraftRow = {
+  key: string;
+  title: string;
+  price: string;
+  prep: string;
+};
+
 type PointForm = {
   title: string;
   address: string;
-  windowMinutes: string;
-  maxPerWindow: string;
   workStart: string;
   workEnd: string;
-  menuText: string;
+  acceptEta: string;
+  breaks: Break[];
+  menu: MenuDraftRow[];
 };
 
-function AddPointForm({ onCreated }: { onCreated: (msg: string) => void | Promise<void> }) {
+let draftKey = 0;
+function emptyMenuRow(): MenuDraftRow {
+  draftKey += 1;
+  return { key: `row-${draftKey}`, title: "", price: "", prep: "180" };
+}
+
+function AddPointForm({
+  hasPoints,
+  onCreated,
+}: {
+  hasPoints: boolean;
+  onCreated: (msg: string) => void | Promise<void>;
+}) {
+  const [open, setOpen] = useState(!hasPoints);
   const [form, setForm] = useState<PointForm>({
     title: "",
     address: "",
-    windowMinutes: "5",
-    maxPerWindow: "3",
     workStart: "08:00",
     workEnd: "20:00",
-    menuText: "Капучино:25000:180,Латте:27000:150",
+    acceptEta: "5",
+    breaks: [],
+    menu: [emptyMenuRow()],
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const set = (k: keyof PointForm) => (e: { target: { value: string } }) =>
     setForm((f) => ({ ...f, [k]: e.target.value }));
 
+  function updateRow(key: string, patch: Partial<MenuDraftRow>) {
+    setForm((f) => ({
+      ...f,
+      menu: f.menu.map((row) => (row.key === key ? { ...row, ...patch } : row)),
+    }));
+  }
+
   async function submit(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
-    const menu = form.menuText
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .map((s) => {
-        const [title, price, prep] = s.split(":").map((x) => x.trim());
-        return { title, price_minor: Number(price), prep_seconds: Number(prep) };
-      });
+
+    // Пустые строки меню не отправляем: владелец может создать точку и
+    // наполнить меню позже через «Товары».
+    const filled = form.menu.filter((row) => row.title.trim() || row.price.trim());
+    const menu = filled.map((row) => ({
+      title: row.title.trim(),
+      price_minor: rubToMinor(row.price),
+      prep_seconds: Number(row.prep),
+    }));
     const badMenu = menu.some(
       (m) => !m.title || !Number.isFinite(m.price_minor) || m.price_minor <= 0 ||
         !Number.isFinite(m.prep_seconds) || m.prep_seconds <= 0,
     );
     if (badMenu) {
-      setError("Меню: формат «Название:цена_в_копейках:prep_секунд», через запятую");
+      setError("Товар: нужны название, цена в рублях и время приготовления в секундах");
       setBusy(false);
       return;
     }
+
     try {
       await api("/admin/points", {
         token: loadTokens()?.access,
         body: {
           title: form.title.trim(),
           address: form.address.trim(),
-          window_minutes: Number(form.windowMinutes),
-          max_orders_per_window: Number(form.maxPerWindow),
           work_start: form.workStart,
           work_end: form.workEnd,
+          accept_eta_minutes: Number(form.acceptEta),
+          breaks: cleanBreaks(form.breaks),
           menu,
         },
       });
-      setForm((f) => ({ ...f, title: "", address: "", menuText: f.menuText }));
+      setForm((f) => ({
+        ...f,
+        title: "",
+        address: "",
+        menu: [emptyMenuRow()],
+      }));
+      setOpen(false);
       await onCreated("Точка создана — видна в приложении у гостей.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "ошибка сети");
@@ -646,43 +699,194 @@ function AddPointForm({ onCreated }: { onCreated: (msg: string) => void | Promis
     }
   }
 
-  return (
-    <form className="owner__form" onSubmit={submit}>
-      <div className="owner__grid">
-        <label className="field">
-          <span>Название точки</span>
-          <input required value={form.title} onChange={set("title")} placeholder="coffeely на Ленина" />
-        </label>
-        <label className="field">
-          <span>Адрес</span>
-          <input value={form.address} onChange={set("address")} placeholder="ул. Ленина, 1" />
-        </label>
-        <label className="field">
-          <span>Окно, минут</span>
-          <input type="number" min={1} max={60} required value={form.windowMinutes} onChange={set("windowMinutes")} />
-        </label>
-        <label className="field">
-          <span>Заказов на окно</span>
-          <input type="number" min={1} max={100} required value={form.maxPerWindow} onChange={set("maxPerWindow")} />
-        </label>
-        <label className="field">
-          <span>Начало работы</span>
-          <input required value={form.workStart} onChange={set("workStart")} placeholder="08:00" />
-        </label>
-        <label className="field">
-          <span>Конец работы</span>
-          <input required value={form.workEnd} onChange={set("workEnd")} placeholder="20:00" />
-        </label>
+  if (!open) {
+    return (
+      <div className="owner__add-point owner__add-point--collapsed">
+        <div>
+          <p className="owner__add-point-title">Новая точка</p>
+          <p className="owner__add-point-note">
+            Название, часы работы и меню. Товары и добавки можно добавить сразу.
+          </p>
+        </div>
+        <button type="button" className="button button--accent" onClick={() => setOpen(true)}>
+          ＋ Добавить точку
+        </button>
       </div>
-      <label className="field">
-        <span>Меню: «Название:цена_в_копейках:prep_секунд», через запятую</span>
-        <textarea rows={2} value={form.menuText} onChange={set("menuText")} />
-      </label>
-      {error && <p className="owner__error">{error}</p>}
-      <button className="button" disabled={busy}>
-        {busy ? "Создаём…" : "Добавить точку"}
+    );
+  }
+
+  return (
+    <div className="owner__add-point">
+      <div className="owner__add-point-head">
+        <p className="owner__add-point-title">Новая точка</p>
+        {hasPoints && (
+          <button type="button" className="button button--ghost" onClick={() => setOpen(false)}>
+            Свернуть
+          </button>
+        )}
+      </div>
+      <p className="owner__add-point-note">
+        Чем наполните — тем и будет торговать точка. Меню можно добавить сейчас
+        или позже кнопкой «Товары».
+      </p>
+      <form className="owner__form owner__form--plain" onSubmit={submit}>
+        <div className="owner__grid">
+          <label className="field">
+            <span>Название точки</span>
+            <input required value={form.title} onChange={set("title")} placeholder="coffeely на Ленина" />
+          </label>
+          <label className="field">
+            <span>Адрес</span>
+            <input value={form.address} onChange={set("address")} placeholder="ул. Ленина, 1" />
+          </label>
+          <label className="field">
+            <span>Начало работы</span>
+            <input type="time" required value={form.workStart} onChange={set("workStart")} />
+          </label>
+          <label className="field">
+            <span>Конец работы</span>
+            <input type="time" required value={form.workEnd} onChange={set("workEnd")} />
+          </label>
+          <label className="field">
+            <span>Бариста возьмёт заказ, мин</span>
+            <input
+              type="number"
+              min={0}
+              max={180}
+              required
+              value={form.acceptEta}
+              onChange={set("acceptEta")}
+            />
+          </label>
+        </div>
+
+        <BreaksEditor
+          breaks={form.breaks}
+          onChange={(breaks) => setForm((f) => ({ ...f, breaks }))}
+        />
+
+        <div className="owner__menu-editor">
+          <p className="owner__menu-editor-title">Меню</p>
+          <p className="owner__hint owner__hint--tight">
+            Название, цена в рублях и сколько секунд готовится напиток.
+          </p>
+          {form.menu.map((row) => (
+            <div className="owner__menu-edit-row" key={row.key}>
+              <label className="field">
+                <span>Название</span>
+                <input
+                  value={row.title}
+                  onChange={(e) => updateRow(row.key, { title: e.target.value })}
+                  placeholder="Капучино"
+                />
+              </label>
+              <label className="field">
+                <span>Цена, ₽</span>
+                <input
+                  inputMode="decimal"
+                  value={row.price}
+                  onChange={(e) => updateRow(row.key, { price: e.target.value })}
+                  placeholder="250"
+                />
+              </label>
+              <label className="field">
+                <span>Готовить, сек</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={row.prep}
+                  onChange={(e) => updateRow(row.key, { prep: e.target.value })}
+                />
+              </label>
+              <button
+                type="button"
+                className="button button--ghost owner__menu-remove"
+                onClick={() =>
+                  setForm((f) => ({
+                    ...f,
+                    menu: f.menu.length > 1
+                      ? f.menu.filter((x) => x.key !== row.key)
+                      : [emptyMenuRow()],
+                  }))
+                }
+              >
+                Убрать
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            className="button button--ghost"
+            onClick={() => setForm((f) => ({ ...f, menu: [...f.menu, emptyMenuRow()] }))}
+          >
+            ＋ Ещё товар
+          </button>
+        </div>
+
+        {error && <p className="owner__error">{error}</p>}
+        <button className="button button--accent button--wide" disabled={busy}>
+          {busy ? "Создаём…" : "Создать точку"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+// BreaksEditor — перерывы точки (обед, техпауза): в это время гости видят
+// «перерыв», а движок ёмкости не выдаёт окна.
+function BreaksEditor({
+  breaks,
+  onChange,
+}: {
+  breaks: Break[];
+  onChange: (breaks: Break[]) => void;
+}) {
+  return (
+    <div className="owner__breaks">
+      <p className="owner__menu-editor-title">Перерывы</p>
+      <p className="owner__hint owner__hint--tight">
+        В перерыв точка не принимает заказы: гости увидят время, когда откроется.
+      </p>
+      {breaks.length === 0 && <p className="owner__hint owner__hint--tight">Без перерывов.</p>}
+      {breaks.map((b, i) => (
+        <div className="owner__break-row" key={`break-${i}`}>
+          <label className="field">
+            <span>Начало</span>
+            <input
+              type="time"
+              value={b.start}
+              onChange={(e) =>
+                onChange(breaks.map((x, j) => (j === i ? { ...x, start: e.target.value } : x)))
+              }
+            />
+          </label>
+          <label className="field">
+            <span>Конец</span>
+            <input
+              type="time"
+              value={b.end}
+              onChange={(e) =>
+                onChange(breaks.map((x, j) => (j === i ? { ...x, end: e.target.value } : x)))
+              }
+            />
+          </label>
+          <button
+            type="button"
+            className="button button--ghost"
+            onClick={() => onChange(breaks.filter((_, j) => j !== i))}
+          >
+            Убрать
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        className="button button--ghost"
+        onClick={() => onChange([...breaks, { start: "13:00", end: "13:30" }])}
+      >
+        ＋ Добавить перерыв
       </button>
-    </form>
+    </div>
   );
 }
 
@@ -698,10 +902,10 @@ function PointRow({
   const [editing, setEditing] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const cap = point.capacity_config ?? {
-    window_minutes: 5,
-    max_orders_per_window: 3,
     work_start: "08:00",
     work_end: "20:00",
+    breaks: [],
+    accept_eta_minutes: 5,
   };
 
   return (
@@ -714,8 +918,11 @@ function PointRow({
         </div>
         <div className="owner__row owner__row--tight">
           <span className="badge">
-            окна {cap.window_minutes} мин · до {cap.max_orders_per_window} зак. ·{" "}
             {cap.work_start}–{cap.work_end}
+            {(cap.breaks?.length ?? 0) > 0
+              ? ` · перерывы ${cap.breaks!.map((b) => `${b.start}–${b.end}`).join(", ")}`
+              : ""}
+            {` · бариста берёт заказ за ${cap.accept_eta_minutes ?? 5} мин`}
           </span>
           <button
             type="button"
@@ -729,7 +936,7 @@ function PointRow({
             className="button button--ghost"
             onClick={() => setMenuOpen((v) => !v)}
           >
-            {menuOpen ? "Скрыть товары" : "Товары"}
+            {menuOpen ? "Скрыть меню" : "Товары и добавки"}
           </button>
         </div>
       </div>
@@ -749,20 +956,20 @@ function PointRow({
 
 function EditPointForm({ point, onSaved }: { point: Point; onSaved: () => void | Promise<void> }) {
   const cap = point.capacity_config ?? {
-    window_minutes: 5,
-    max_orders_per_window: 3,
     work_start: "08:00",
     work_end: "20:00",
+    breaks: [],
+    accept_eta_minutes: 5,
   };
   const [form, setForm] = useState({
     title: point.title,
     address: point.address,
-    windowMinutes: String(cap.window_minutes),
-    maxPerWindow: String(cap.max_orders_per_window),
     workStart: cap.work_start,
     workEnd: cap.work_end,
+    acceptEta: String(cap.accept_eta_minutes ?? 5),
     active: point.is_active,
   });
+  const [breaks, setBreaks] = useState<Break[]>(cap.breaks ?? []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const set = (k: keyof typeof form) => (e: { target: { value: string } }) =>
@@ -779,10 +986,10 @@ function EditPointForm({ point, onSaved }: { point: Point; onSaved: () => void |
         body: {
           title: form.title.trim(),
           address: form.address.trim(),
-          window_minutes: Number(form.windowMinutes),
-          max_orders_per_window: Number(form.maxPerWindow),
           work_start: form.workStart,
           work_end: form.workEnd,
+          accept_eta_minutes: Number(form.acceptEta),
+          breaks: cleanBreaks(breaks),
           is_active: form.active,
         },
       });
@@ -806,22 +1013,28 @@ function EditPointForm({ point, onSaved }: { point: Point; onSaved: () => void |
           <input value={form.address} onChange={set("address")} />
         </label>
         <label className="field">
-          <span>Окно, минут</span>
-          <input type="number" min={1} max={60} required value={form.windowMinutes} onChange={set("windowMinutes")} />
-        </label>
-        <label className="field">
-          <span>Заказов на окно</span>
-          <input type="number" min={1} max={100} required value={form.maxPerWindow} onChange={set("maxPerWindow")} />
-        </label>
-        <label className="field">
           <span>Начало работы</span>
-          <input required value={form.workStart} onChange={set("workStart")} placeholder="08:00" />
+          <input type="time" required value={form.workStart} onChange={set("workStart")} />
         </label>
         <label className="field">
           <span>Конец работы</span>
-          <input required value={form.workEnd} onChange={set("workEnd")} placeholder="20:00" />
+          <input type="time" required value={form.workEnd} onChange={set("workEnd")} />
+        </label>
+        <label className="field">
+          <span>Бариста возьмёт заказ, мин</span>
+          <input
+            type="number"
+            min={0}
+            max={180}
+            required
+            value={form.acceptEta}
+            onChange={set("acceptEta")}
+          />
         </label>
       </div>
+
+      <BreaksEditor breaks={breaks} onChange={setBreaks} />
+
       <label className="field field--check">
         <input
           type="checkbox"
@@ -840,19 +1053,26 @@ function EditPointForm({ point, onSaved }: { point: Point; onSaved: () => void |
 
 function PointMenu({ point }: { point: Point }) {
   const [items, setItems] = useState<MenuItem[] | null>(null);
+  const [addons, setAddons] = useState<Addon[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [price, setPrice] = useState("");
   const [prep, setPrep] = useState("180");
+  const [addonTitle, setAddonTitle] = useState("");
+  const [addonPrice, setAddonPrice] = useState("");
+  const [addonPrep, setAddonPrep] = useState("0");
   const [busy, setBusy] = useState(false);
+  const [addonBusy, setAddonBusy] = useState(false);
 
   useEffect(() => {
     void (async () => {
       try {
-        const res = await api<{ items: MenuItem[] }>(`/admin/points/${point.id}/menu`, {
-          token: loadTokens()?.access,
-        });
+        const res = await api<{ items: MenuItem[]; addons: Addon[] }>(
+          `/admin/points/${point.id}/menu`,
+          { token: loadTokens()?.access },
+        );
         setItems(res.items);
+        setAddons(res.addons ?? []);
       } catch (err) {
         setError(err instanceof Error ? err.message : "ошибка сети");
       }
@@ -891,9 +1111,48 @@ function PointMenu({ point }: { point: Point }) {
     }
   }
 
+  async function addAddon(e: FormEvent) {
+    e.preventDefault();
+    const priceMinor = rubToMinor(addonPrice || "0");
+    if (
+      !addonTitle.trim() ||
+      !Number.isFinite(priceMinor) ||
+      priceMinor < 0 ||
+      !Number.isFinite(Number(addonPrep)) ||
+      Number(addonPrep) < 0
+    ) {
+      setError("Добавка: нужно название, цена в рублях (0 — бесплатно) и время в секундах");
+      return;
+    }
+    setAddonBusy(true);
+    setError(null);
+    try {
+      const addon = await api<Addon>(`/admin/points/${point.id}/addons`, {
+        body: {
+          title: addonTitle.trim(),
+          price_minor: priceMinor,
+          prep_seconds: Number(addonPrep),
+        },
+        token: loadTokens()?.access,
+      });
+      setAddons((cur) =>
+        cur ? [...cur, addon].sort((a, b) => a.title.localeCompare(b.title, "ru")) : [addon],
+      );
+      setAddonTitle("");
+      setAddonPrice("");
+      setAddonPrep("0");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ошибка сети");
+    } finally {
+      setAddonBusy(false);
+    }
+  }
+
   return (
     <div className="owner__menu">
-      <p className="owner__hint">Товары точки: цена и время приготовления влияют на расчёт времени готовности.</p>
+      <p className="owner__hint">
+        Товары точки: цена и время приготовления влияют на расчёт времени готовности.
+      </p>
       {error && <p className="owner__error">{error}</p>}
       {items === null ? (
         <p className="owner__hint">Загружаем меню…</p>
@@ -931,6 +1190,64 @@ function PointMenu({ point }: { point: Point }) {
           {busy ? "Добавляем…" : "Добавить товар"}
         </button>
       </form>
+
+      <div className="owner__addons">
+        <h4 className="owner__menu-editor-title">Добавки для кофе</h4>
+        <p className="owner__hint owner__hint--tight">
+          Сироп, овсяное молоко, дополнительный шот. Гость выбирает их к напитку,
+          цена прибавляется к заказу.
+        </p>
+        {addons === null ? (
+          <p className="owner__hint">Загружаем добавки…</p>
+        ) : addons.length === 0 ? (
+          <p className="owner__hint">Добавок пока нет.</p>
+        ) : (
+          <div className="owner__menu-list">
+            {addons.map((a) => (
+              <AddonRow
+                key={a.id}
+                addon={a}
+                onSaved={(updated) =>
+                  setAddons((cur) => cur && cur.map((x) => (x.id === updated.id ? updated : x)))
+                }
+              />
+            ))}
+          </div>
+        )}
+        <form className="owner__form" onSubmit={addAddon}>
+          <div className="owner__menu-row">
+            <label className="field">
+              <span>Новая добавка</span>
+              <input
+                value={addonTitle}
+                onChange={(e) => setAddonTitle(e.target.value)}
+                placeholder="Сироп карамель"
+              />
+            </label>
+            <label className="field">
+              <span>Цена, ₽</span>
+              <input
+                inputMode="decimal"
+                value={addonPrice}
+                onChange={(e) => setAddonPrice(e.target.value)}
+                placeholder="40"
+              />
+            </label>
+            <label className="field">
+              <span>Готовить, сек</span>
+              <input
+                type="number"
+                min={0}
+                value={addonPrep}
+                onChange={(e) => setAddonPrep(e.target.value)}
+              />
+            </label>
+          </div>
+          <button className="button" disabled={addonBusy}>
+            {addonBusy ? "Добавляем…" : "Добавить добавку"}
+          </button>
+        </form>
+      </div>
     </div>
   );
 }
@@ -1004,6 +1321,83 @@ function MenuItemRow({ item, onSaved }: { item: MenuItem; onSaved: (item: MenuIt
           {item.is_available ? "Скрыть из меню" : "Вернуть в продажу"}
         </button>
         <span className="badge">{item.is_available ? "в продаже" : "скрыт"}</span>
+      </div>
+      {error && <p className="owner__error">{error}</p>}
+    </form>
+  );
+}
+
+/* ------------------------- Добавки к напиткам ---------------------------- */
+
+function AddonRow({ addon, onSaved }: { addon: Addon; onSaved: (addon: Addon) => void }) {
+  const [title, setTitle] = useState(addon.title);
+  const [price, setPrice] = useState(minorToRub(addon.price_minor));
+  const [prep, setPrep] = useState(String(addon.prep_seconds));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(patch: Record<string, unknown>) {
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await api<Addon>(`/admin/addons/${addon.id}`, {
+        method: "PATCH",
+        body: patch,
+        token: loadTokens()?.access,
+      });
+      onSaved(updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ошибка сети");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveFields(e: FormEvent) {
+    e.preventDefault();
+    const priceMinor = rubToMinor(price || "0");
+    if (
+      !title.trim() ||
+      !Number.isFinite(priceMinor) ||
+      priceMinor < 0 ||
+      !Number.isFinite(Number(prep)) ||
+      Number(prep) < 0
+    ) {
+      setError("Проверьте название, цену и время приготовления");
+      return;
+    }
+    await save({ title: title.trim(), price_minor: priceMinor, prep_seconds: Number(prep) });
+  }
+
+  return (
+    <form className="owner__menu-item" onSubmit={saveFields}>
+      <div className="owner__menu-row">
+        <label className="field">
+          <span>Добавка</span>
+          <input required value={title} onChange={(e) => setTitle(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Цена, ₽</span>
+          <input inputMode="decimal" required value={price} onChange={(e) => setPrice(e.target.value)} />
+        </label>
+        <label className="field">
+          <span>Готовить, сек</span>
+          <input type="number" min={0} required value={prep} onChange={(e) => setPrep(e.target.value)} />
+        </label>
+      </div>
+      <div className="owner__row">
+        <button className="button" disabled={busy}>
+          {busy ? "Сохраняем…" : "Сохранить"}
+        </button>
+        <button
+          type="button"
+          className="button button--ghost"
+          disabled={busy}
+          onClick={() => void save({ is_available: !addon.is_available })}
+        >
+          {addon.is_available ? "Скрыть из меню" : "Вернуть в продажу"}
+        </button>
+        <span className="badge">{addon.is_available ? "в продаже" : "скрыта"}</span>
       </div>
       {error && <p className="owner__error">{error}</p>}
     </form>
@@ -1140,6 +1534,11 @@ function EditBaristaForm({
 
 function rubToMinor(value: string): number {
   return Math.round(Number(value.replace(",", ".").trim()) * 100);
+}
+
+// Перерывы с пустыми полями не отправляем: бэкенд справедливо сочтёт их ошибкой.
+function cleanBreaks(breaks: Break[]): Break[] {
+  return breaks.filter((b) => b.start.trim() && b.end.trim());
 }
 
 function minorToRub(minor: number): string {

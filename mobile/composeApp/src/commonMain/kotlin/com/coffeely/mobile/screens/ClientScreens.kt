@@ -14,9 +14,11 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -42,6 +44,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.coffeely.mobile.api.AddonDto
 import com.coffeely.mobile.api.ApiClient
 import com.coffeely.mobile.api.MenuItemDto
 import com.coffeely.mobile.api.OrderDto
@@ -54,6 +57,9 @@ import com.coffeely.mobile.api.waitMinutes
 import com.coffeely.mobile.ui.ThemeModeButton
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+// Строка корзины: количество и выбранные добавки (id из каталога точки).
+private data class CartLine(val qty: Int, val addonIds: Set<String> = emptySet())
 
 // Клиентский флоу v2: точки (с ожиданием) → меню → заказ (окно назначает точка)
 // → статус заказа в реальном времени. «Мои заказы» — отдельным экраном.
@@ -173,6 +179,8 @@ private fun PointCard(point: PointDto, onOpen: () -> Unit) {
                 Spacer(Modifier.height(4.dp))
                 Text(
                     when {
+                        !point.load.is_open && point.load.on_break && point.load.opens_at.isNotBlank() ->
+                            "перерыв · откроется в ${point.load.opens_at}"
                         !point.load.is_open && point.load.opens_at.isNotBlank() ->
                             "закрыто · откроется в ${point.load.opens_at}"
                         !point.load.is_open -> "закрыто"
@@ -203,18 +211,34 @@ private fun PointScreen(
     onOpenOrders: () -> Unit,
 ) {
     var menu by remember { mutableStateOf<List<MenuItemDto>>(emptyList()) }
-    var cart by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
+    var addons by remember { mutableStateOf<List<AddonDto>>(emptyList()) }
+    var cart by remember { mutableStateOf<Map<String, CartLine>>(emptyMap()) }
+    var addonTarget by remember { mutableStateOf<MenuItemDto?>(null) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(point.id) {
-        api.menu(point.id).fold({ menu = it.menu }, { error = it.message })
+        api.menu(point.id).fold(
+            { menu = it.menu; addons = it.addons },
+            { error = it.message },
+        )
     }
 
-    val totalMinor = menu.sumOf { (cart[it.id] ?: 0) * it.price_minor }
-    val totalItems = cart.values.sum()
-    val ownPrepSeconds = menu.sumOf { (cart[it.id] ?: 0) * it.prep_seconds }
+    fun selectedAddons(line: CartLine?): List<AddonDto> =
+        addons.filter { it.id in (line?.addonIds ?: emptySet()) }
+
+    val totalMinor = menu.sumOf { item ->
+        val line = cart[item.id] ?: return@sumOf 0L
+        val addonMinor = selectedAddons(line).sumOf { it.price_minor }
+        line.qty * (item.price_minor + addonMinor)
+    }
+    val totalItems = cart.values.sumOf { it.qty }
+    val ownPrepSeconds = menu.sumOf { item ->
+        val line = cart[item.id] ?: return@sumOf 0
+        val addonPrep = selectedAddons(line).sumOf { it.prep_seconds }
+        line.qty * (item.prep_seconds + addonPrep)
+    }
 
     Scaffold(
         topBar = {
@@ -257,7 +281,9 @@ private fun PointScreen(
                                     error = null
                                     api.createOrder(
                                         point.id,
-                                        cart.entries.map { OrderItemRef(it.key, it.value) },
+                                        cart.map { (menuItemId, line) ->
+                                            OrderItemRef(menuItemId, line.qty, line.addonIds.toList())
+                                        },
                                     ).fold({ onOrdered(it) }, { error = it.message })
                                     busy = false
                                 }
@@ -289,6 +315,8 @@ private fun PointScreen(
                     val wait = point.load.wait_seconds + ownPrepSeconds
                     Text(
                         when {
+                            !point.load.is_open && point.load.on_break && point.load.opens_at.isNotBlank() ->
+                                "Сейчас перерыв до ${point.load.opens_at}"
                             !point.load.is_open && point.load.opens_at.isNotBlank() ->
                                 "Сейчас закрыто, откроемся в ${point.load.opens_at}"
                             totalItems == 0 ->
@@ -302,8 +330,8 @@ private fun PointScreen(
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Точное время готовности покажем сразу после заказа — " +
-                            "и будем обновлять статус, пока вы идёте.",
+                        "Бариста возьмёт заказ в работу — точное время покажем " +
+                            "на статусе заказа.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
@@ -315,26 +343,50 @@ private fun PointScreen(
                 modifier = Modifier.weight(1f),
             ) {
                 items(menu) { item ->
-                    val qty = cart[item.id] ?: 0
+                    val line = cart[item.id]
+                    val qty = line?.qty ?: 0
+                    val chosen = selectedAddons(line)
                     Card(Modifier.fillMaxWidth()) {
-                        Row(
-                            Modifier.padding(12.dp).fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(item.title, style = MaterialTheme.typography.bodyLarge)
-                                Text(
-                                    "${item.price_minor / 100} ₽ · ${waitMinutes(item.prep_seconds)} мин",
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                            }
-                            if (qty > 0) {
+                        Column(Modifier.padding(12.dp)) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(item.title, style = MaterialTheme.typography.bodyLarge)
+                                    Text(
+                                        "${item.price_minor / 100} ₽ · ${waitMinutes(item.prep_seconds)} мин",
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                    if (chosen.isNotEmpty()) {
+                                        Text(
+                                            "добавки: ${chosen.joinToString { it.title }} " +
+                                                "+${chosen.sumOf { it.price_minor } / 100} ₽",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.primary,
+                                        )
+                                    }
+                                }
+                                if (qty > 0) {
+                                    TextButton(onClick = {
+                                        cart = if (qty == 1) {
+                                            cart - item.id
+                                        } else {
+                                            cart + (item.id to line!!.copy(qty = qty - 1))
+                                        }
+                                    }) { Text("−") }
+                                }
+                                Text("$qty")
                                 TextButton(onClick = {
-                                    cart = if (qty == 1) cart - item.id else cart + (item.id to qty - 1)
-                                }) { Text("−") }
+                                    cart = cart + (item.id to
+                                        (line ?: CartLine(0)).copy(qty = qty + 1))
+                                }) { Text("+") }
                             }
-                            Text("$qty")
-                            TextButton(onClick = { cart = cart + (item.id to qty + 1) }) { Text("+") }
+                            if (addons.isNotEmpty()) {
+                                TextButton(onClick = { addonTarget = item }) {
+                                    Text(if (chosen.isEmpty()) "Добавить добавки" else "Изменить добавки")
+                                }
+                            }
                         }
                     }
                 }
@@ -344,6 +396,76 @@ private fun PointScreen(
             }
         }
     }
+
+    addonTarget?.let { target ->
+        val current = cart[target.id] ?: CartLine(0)
+        AddonPickerDialog(
+            menuItemTitle = target.title,
+            addons = addons,
+            selected = current.addonIds,
+            onDismiss = { addonTarget = null },
+            onConfirm = { selected ->
+                val line = cart[target.id]
+                cart = if (line == null) {
+                    cart + (target.id to CartLine(1, selected))
+                } else {
+                    cart + (target.id to line.copy(addonIds = selected))
+                }
+                addonTarget = null
+            },
+        )
+    }
+}
+
+// AddonPickerDialog — выбор добавок к одному напитку. Добавки применяются ко
+// всему количеству этого напитка в корзине.
+@Composable
+private fun AddonPickerDialog(
+    menuItemTitle: String,
+    addons: List<AddonDto>,
+    selected: Set<String>,
+    onDismiss: () -> Unit,
+    onConfirm: (Set<String>) -> Unit,
+) {
+    var chosen by remember(menuItemTitle) { mutableStateOf(selected) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Добавки к «$menuItemTitle»") },
+        text = {
+            Column {
+                addons.forEach { addon ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable {
+                            chosen = if (addon.id in chosen) chosen - addon.id else chosen + addon.id
+                        },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(
+                            checked = addon.id in chosen,
+                            onCheckedChange = { checked ->
+                                chosen = if (checked) chosen + addon.id else chosen - addon.id
+                            },
+                        )
+                        Text(
+                            addon.title,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            if (addon.price_minor > 0) "+${addon.price_minor / 100} ₽" else "бесплатно",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(chosen) }) { Text("Готово") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Отмена") }
+        },
+    )
 }
 
 // «Мои заказы»: активные сверху, история ниже; обновление каждые 5 секунд.
@@ -417,6 +539,17 @@ private fun OrdersScreen(api: ApiClient, onBack: () -> Unit, onOpen: (OrderDto) 
                                 },
                                 style = MaterialTheme.typography.bodyMedium,
                             )
+                            if (o.status == "paid") {
+                                Text(
+                                    if (o.accept_in_seconds > 0) {
+                                        "бариста возьмёт через ${waitMinutes(o.accept_in_seconds.toInt())} мин"
+                                    } else {
+                                        "бариста берёт заказ в работу"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
                         }
                     }
                 }
@@ -468,7 +601,13 @@ private fun OrderStatusScreen(
         ) {
             Spacer(Modifier.height(24.dp))
             Text(
-                if (current.status == "ready") "Кофе готов" else "Готовим ваш кофе",
+                when (current.status) {
+                    "paid" -> "Заказ принят"
+                    "ready" -> "Кофе готов"
+                    "given_out" -> "Заказ выдан"
+                    "cancelled" -> "Заказ отменён"
+                    else -> "Готовим ваш кофе"
+                },
                 style = MaterialTheme.typography.headlineSmall,
             )
             Spacer(Modifier.height(8.dp))
@@ -480,6 +619,15 @@ private fun OrderStatusScreen(
                 },
                 style = MaterialTheme.typography.titleLarge,
             )
+            if (current.status == "paid") {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    baristaEtaText(current.accept_in_seconds, current.accept_by_at),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
             Spacer(Modifier.height(24.dp))
             LinearProgressIndicator(
                 modifier = Modifier.fillMaxWidth(),
@@ -492,8 +640,13 @@ private fun OrderStatusScreen(
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
                         current.items.forEach { item ->
+                            val addons = if (item.addons.isEmpty()) {
+                                ""
+                            } else {
+                                " · " + item.addons.joinToString { it.title }
+                            }
                             Text(
-                                "${item.title} ×${item.qty}",
+                                "${item.title} ×${item.qty}$addons",
                                 style = MaterialTheme.typography.bodyMedium,
                             )
                         }
@@ -508,6 +661,22 @@ private fun OrderStatusScreen(
             Spacer(Modifier.weight(1f))
             TextButton(onClick = onDone) { Text("К списку точек") }
         }
+    }
+}
+
+// baristaEtaText — ETA «бариста возьмёт заказ»: сколько осталось и к какому
+// времени (в поясе телефона). Время считает сервер, поэтому пояс не важен.
+private fun baristaEtaText(secondsLeft: Long, acceptBy: String): String {
+    val until = when {
+        acceptBy.isBlank() -> ""
+        else -> " (к ${hhmm(acceptBy)})"
+    }
+    return when {
+        secondsLeft > 0 ->
+            "Бариста возьмёт заказ примерно через ${waitMinutes(secondsLeft.toInt())} мин$until"
+        secondsLeft > -300 ->
+            "Бариста уже должен взять заказ — вот-вот начнёт$until"
+        else -> "Бариста задерживается — уточните на стойке"
     }
 }
 

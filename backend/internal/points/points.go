@@ -26,17 +26,33 @@ var (
 // чем пообещать кофе через три часа.
 const maxLead = 120 * time.Minute
 
+// Break — перерыв в работе точки ("HH:MM" локального времени точки).
+// Несколько перерывов за день — нормально: обед и техпауза.
+type Break struct {
+	Start string `json:"start"`
+	End   string `json:"end"`
+}
+
 // CapacityConfig — параметры ёмкости точки (jsonb capacity_config).
 type CapacityConfig struct {
 	WindowMinutes      int    // длина окна производства
 	MaxOrdersPerWindow int    // лимит заказов на окно
 	WorkStart          string // "HH:MM" локального времени точки
 	WorkEnd            string
+	Breaks             []Break // перерывы внутри рабочего дня
+	AcceptETAMinutes   int     // за сколько минут бариста должен взять заказ
 }
+
+// defaultAcceptETA — ETA «бариста возьмёт заказ», если владелец не настроил.
+const defaultAcceptETA = 5
 
 // defaults — соло-режим AIK-13: разумные значения без настройки.
 func defaultCapacity() CapacityConfig {
-	return CapacityConfig{WindowMinutes: 5, MaxOrdersPerWindow: 3, WorkStart: "08:00", WorkEnd: "20:00"}
+	return CapacityConfig{
+		WindowMinutes: 5, MaxOrdersPerWindow: 3,
+		WorkStart: "08:00", WorkEnd: "20:00",
+		AcceptETAMinutes: defaultAcceptETA,
+	}
 }
 
 func parseCapacity(raw []byte) CapacityConfig {
@@ -49,6 +65,11 @@ func parseCapacity(raw []byte) CapacityConfig {
 		MaxOrdersPerWindow *int    `json:"max_orders_per_window"`
 		WorkStart          *string `json:"work_start"`
 		WorkEnd            *string `json:"work_end"`
+		Breaks             *[]struct {
+			Start string `json:"start"`
+			End   string `json:"end"`
+		} `json:"breaks"`
+		AcceptETAMinutes *int `json:"accept_eta_minutes"`
 	}
 	if err := json.Unmarshal(raw, &stored); err != nil {
 		return cfg // битый конфиг = дефолт, точка продолжает работать
@@ -65,7 +86,39 @@ func parseCapacity(raw []byte) CapacityConfig {
 	if stored.WorkEnd != nil {
 		cfg.WorkEnd = *stored.WorkEnd
 	}
+	if stored.Breaks != nil {
+		cfg.Breaks = make([]Break, 0, len(*stored.Breaks))
+		for _, b := range *stored.Breaks {
+			cfg.Breaks = append(cfg.Breaks, Break{Start: b.Start, End: b.End})
+		}
+	}
+	if stored.AcceptETAMinutes != nil && *stored.AcceptETAMinutes >= 0 && *stored.AcceptETAMinutes <= 180 {
+		cfg.AcceptETAMinutes = *stored.AcceptETAMinutes
+	}
 	return cfg
+}
+
+// AcceptETA — сколько времени баристе даётся на то, чтобы взять заказ
+// (capacity_config.accept_eta_minutes, дефолт соло-режима).
+func AcceptETA(raw []byte) time.Duration {
+	return time.Duration(parseCapacity(raw).AcceptETAMinutes) * time.Minute
+}
+
+// breakRanges — валидные перерывы в минутах от начала суток. Кривые записи
+// (не HH:MM, конец раньше начала) игнорируются: точка продолжает работать.
+type breakRange struct{ start, end int }
+
+func breakRanges(cfg CapacityConfig) []breakRange {
+	out := make([]breakRange, 0, len(cfg.Breaks))
+	for _, b := range cfg.Breaks {
+		start, err1 := parseHM(b.Start)
+		end, err2 := parseHM(b.End)
+		if err1 != nil || err2 != nil || end <= start {
+			continue
+		}
+		out = append(out, breakRange{start: start, end: end})
+	}
+	return out
 }
 
 // Load — текущая загрузка точки: сколько ждать, если заказать прямо сейчас.
@@ -74,8 +127,10 @@ type Load struct {
 	WaitSeconds int `json:"wait_seconds"`
 	// ActiveOrders — заказов в работе (paid + in_production).
 	ActiveOrders int `json:"active_orders"`
-	// IsOpen — точка сейчас принимает заказы (в рабочих часах).
+	// IsOpen — точка сейчас принимает заказы (в рабочих часах и не на перерыве).
 	IsOpen bool `json:"is_open"`
+	// OnBreak — сейчас перерыв; OpensAt — когда он закончится.
+	OnBreak bool `json:"on_break"`
 	// OpensAt — "HH:MM", когда откроется (только если закрыто).
 	OpensAt string `json:"opens_at,omitempty"`
 }
@@ -88,6 +143,14 @@ type Point struct {
 	Geo      json.RawMessage `json:"geo"`
 	Timezone string          `json:"timezone"`
 	Load     Load            `json:"load"`
+}
+
+// Addon — добавка к напитку (сироп, молоко, доп. шот).
+type Addon struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	PriceMinor  int64  `json:"price_minor"`
+	PrepSeconds int    `json:"prep_seconds"`
 }
 
 // MenuItem — позиция меню точки.
@@ -120,11 +183,15 @@ func (s *Store) List(ctx context.Context, now time.Time) ([]Point, error) {
 		       COALESCE(q.prep_seconds, 0), COALESCE(q.active_orders, 0)
 		FROM points p
 		LEFT JOIN LATERAL (
-			SELECT COALESCE(SUM(mi.prep_seconds * oi.qty), 0)::int AS prep_seconds,
+			SELECT COALESCE(SUM((mi.prep_seconds + COALESCE(a.prep_seconds, 0)) * oi.qty), 0)::int AS prep_seconds,
 			       COUNT(DISTINCT o.id)::int AS active_orders
 			FROM orders o
 			JOIN order_items oi ON oi.order_id = o.id
 			JOIN menu_items mi ON mi.id = oi.menu_item_id
+			LEFT JOIN LATERAL (
+				SELECT SUM(oia.prep_seconds)::int AS prep_seconds
+				FROM order_item_addons oia WHERE oia.order_item_id = oi.id
+			) a ON true
 			WHERE o.point_id = p.id AND o.status IN ('paid', 'in_production')
 		) q ON true
 		WHERE p.is_active
@@ -143,7 +210,7 @@ func (s *Store) List(ctx context.Context, now time.Time) ([]Point, error) {
 			return nil, fmt.Errorf("points: scan: %w", err)
 		}
 		p.Geo = json.RawMessage(geo)
-		p.Load.IsOpen, p.Load.OpensAt = openState(parseCapacity(capacityRaw), p.Timezone, now)
+		p.Load.IsOpen, p.Load.OpensAt, p.Load.OnBreak = openState(parseCapacity(capacityRaw), p.Timezone, now)
 		out = append(out, p)
 	}
 	return out, rows.Err()
@@ -165,6 +232,26 @@ func (s *Store) Menu(ctx context.Context, pointID string) ([]MenuItem, error) {
 			return nil, fmt.Errorf("points: scan menu: %w", err)
 		}
 		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// Addons — доступные добавки точки.
+func (s *Store) Addons(ctx context.Context, pointID string) ([]Addon, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, title, price_minor, prep_seconds
+		FROM addons WHERE point_id = $1 AND is_available ORDER BY title`, pointID)
+	if err != nil {
+		return nil, fmt.Errorf("points: addons: %w", err)
+	}
+	defer rows.Close()
+	var out []Addon
+	for rows.Next() {
+		var a Addon
+		if err := rows.Scan(&a.ID, &a.Title, &a.PriceMinor, &a.PrepSeconds); err != nil {
+			return nil, fmt.Errorf("points: scan addon: %w", err)
+		}
+		out = append(out, a)
 	}
 	return out, rows.Err()
 }
@@ -193,10 +280,14 @@ func (s *Store) PlanSlot(ctx context.Context, tx pgx.Tx, pointID string, ownPrep
 
 	var queueSeconds int
 	if err := tx.QueryRow(ctx, `
-		SELECT COALESCE(SUM(mi.prep_seconds * oi.qty), 0)::int
+		SELECT COALESCE(SUM((mi.prep_seconds + COALESCE(a.prep_seconds, 0)) * oi.qty), 0)::int
 		FROM orders o
 		JOIN order_items oi ON oi.order_id = o.id
 		JOIN menu_items mi ON mi.id = oi.menu_item_id
+		LEFT JOIN LATERAL (
+			SELECT SUM(oia.prep_seconds)::int AS prep_seconds
+			FROM order_item_addons oia WHERE oia.order_item_id = oi.id
+		) a ON true
 		WHERE o.point_id = $1 AND o.status IN ('paid', 'in_production')`, pointID,
 	).Scan(&queueSeconds); err != nil {
 		return SlotPlan{}, fmt.Errorf("points: queue prep: %w", err)
@@ -210,6 +301,7 @@ func (s *Store) PlanSlot(ctx context.Context, tx pgx.Tx, pointID string, ownPrep
 	if err != nil {
 		return SlotPlan{}, fmt.Errorf("points: work_end: %w", err)
 	}
+	breaks := breakRanges(capacity)
 
 	ready := now.Add(time.Duration(queueSeconds)*time.Second + ownPrep)
 	if queueSeconds == 0 && ownPrep == 0 {
@@ -232,6 +324,11 @@ func (s *Store) PlanSlot(ctx context.Context, tx pgx.Tx, pointID string, ownPrep
 		// получает полный prep заказа ДО начала окна (ядро AIK-11).
 		if wStart.Before(ready) {
 			candidate = wEnd
+			continue
+		}
+		// Перерыв: окно не выдаём, ждём конца перерыва (обед, техпауза).
+		if bEnd, onBreak := breakOverlapEnd(wStart, wEnd, loc, breaks); onBreak {
+			candidate = bEnd
 			continue
 		}
 
@@ -281,23 +378,48 @@ func capacityWithLocation(raw []byte, tz string) (CapacityConfig, *time.Location
 	return parseCapacity(raw), loc, nil
 }
 
-// openState — открыта ли точка в момент now (в её таймзоне).
-func openState(capacity CapacityConfig, tz string, now time.Time) (bool, string) {
+// openState — открыта ли точка в момент now (в её таймзоне). Если закрыта,
+// возвращает, когда откроется, и признак «это перерыв», чтобы гость видел
+// «перерыв до 14:30», а не «закрыто».
+func openState(capacity CapacityConfig, tz string, now time.Time) (open bool, opensAt string, onBreak bool) {
 	loc, err := time.LoadLocation(tz)
 	if err != nil {
-		return false, capacity.WorkStart
+		return false, capacity.WorkStart, false
 	}
 	startMin, err1 := parseHM(capacity.WorkStart)
 	endMin, err2 := parseHM(capacity.WorkEnd)
 	if err1 != nil || err2 != nil {
-		return false, ""
+		return false, "", false
 	}
 	local := now.In(loc)
 	minutes := local.Hour()*60 + local.Minute()
 	if minutes < startMin || minutes >= endMin {
-		return false, capacity.WorkStart
+		return false, capacity.WorkStart, false
 	}
-	return true, ""
+	for _, b := range breakRanges(capacity) {
+		if minutes >= b.start && minutes < b.end {
+			return false, formatHM(b.end), true
+		}
+	}
+	return true, "", false
+}
+
+// breakOverlapEnd — окно [wStart, wEnd) пересекается с перерывом? Тогда
+// возвращает момент конца перерыва: следующая попытка планирования — после него.
+func breakOverlapEnd(wStart, wEnd time.Time, loc *time.Location, breaks []breakRange) (time.Time, bool) {
+	if len(breaks) == 0 {
+		return time.Time{}, false
+	}
+	local := wStart.In(loc)
+	dayStart := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
+	wStartMin := int(wStart.Sub(dayStart) / time.Minute)
+	wEndMin := int(wEnd.Sub(dayStart) / time.Minute)
+	for _, b := range breaks {
+		if wStartMin < b.end && wEndMin > b.start {
+			return dayStart.Add(time.Duration(b.end) * time.Minute), true
+		}
+	}
+	return time.Time{}, false
 }
 
 // windowAt — окно сетки, в которое попадает момент ts (или первое окно дня).
@@ -337,4 +459,12 @@ func parseHM(hm string) (int, error) {
 		return 0, fmt.Errorf("формат HH:MM: %w", err)
 	}
 	return h*60 + m, nil
+}
+
+// formatHM — минуты от начала суток обратно в "HH:MM".
+func formatHM(minutes int) string {
+	if minutes < 0 {
+		minutes = 0
+	}
+	return fmt.Sprintf("%02d:%02d", (minutes/60)%24, minutes%60)
 }

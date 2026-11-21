@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/Incept10n/coffeely/backend/internal/auth"
@@ -48,14 +49,47 @@ type menuItemReq struct {
 	PrepSeconds int    `json:"prep_seconds"`
 }
 
+type addonReq struct {
+	Title       string `json:"title"`
+	PriceMinor  int64  `json:"price_minor"`
+	PrepSeconds int    `json:"prep_seconds"`
+}
+
+type breakReq struct {
+	Start string `json:"start"`
+	End   string `json:"end"`
+}
+
+// validBreaks — каждый перерыв в формате HH:MM и заканчивается позже начала.
+func validBreaks(breaks []breakReq) bool {
+	for _, b := range breaks {
+		if !hmRe.MatchString(b.Start) || !hmRe.MatchString(b.End) || hmToMinutes(b.End) <= hmToMinutes(b.Start) {
+			return false
+		}
+	}
+	return true
+}
+
+func hmToMinutes(hm string) int {
+	parts := strings.SplitN(hm, ":", 2)
+	if len(parts) != 2 {
+		return 0
+	}
+	h, _ := strconv.Atoi(parts[0])
+	m, _ := strconv.Atoi(parts[1])
+	return h*60 + m
+}
+
 type createPointRequest struct {
-	Title         string        `json:"title"`
-	Address       string        `json:"address"`
-	WindowMinutes int           `json:"window_minutes"`
-	MaxPerWindow  int           `json:"max_orders_per_window"`
-	WorkStart     string        `json:"work_start"` // HH:MM
-	WorkEnd       string        `json:"work_end"`   // HH:MM
-	Menu          []menuItemReq `json:"menu"`
+	Title            string        `json:"title"`
+	Address          string        `json:"address"`
+	WindowMinutes    int           `json:"window_minutes"`
+	MaxPerWindow     int           `json:"max_orders_per_window"`
+	WorkStart        string        `json:"work_start"` // HH:MM
+	WorkEnd          string        `json:"work_end"`   // HH:MM
+	Breaks           []breakReq    `json:"breaks"`
+	AcceptETAMinutes *int          `json:"accept_eta_minutes"`
+	Menu             []menuItemReq `json:"menu"`
 }
 
 // POST /admin/points — создать точку (+ необязательное меню).
@@ -71,9 +105,22 @@ func (h *Handlers) CreatePoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Title = strings.TrimSpace(req.Title)
+	// Окно и лимит заказов на окно — внутренние параметры движка ёмкости:
+	// владелец их не настраивает (в форме их нет), берём дефолты соло-режима.
+	if req.WindowMinutes == 0 {
+		req.WindowMinutes = 5
+	}
+	if req.MaxPerWindow == 0 {
+		req.MaxPerWindow = 3
+	}
+	acceptETA := 5
+	if req.AcceptETAMinutes != nil {
+		acceptETA = *req.AcceptETAMinutes
+	}
 	if req.Title == "" || req.WindowMinutes <= 0 || req.WindowMinutes > 60 ||
 		req.MaxPerWindow <= 0 || req.MaxPerWindow > 100 ||
-		!hmRe.MatchString(req.WorkStart) || !hmRe.MatchString(req.WorkEnd) {
+		!hmRe.MatchString(req.WorkStart) || !hmRe.MatchString(req.WorkEnd) ||
+		acceptETA < 0 || acceptETA > 180 || !validBreaks(req.Breaks) {
 		httpx.WriteError(w, ErrBadCapacity)
 		return
 	}
@@ -82,6 +129,8 @@ func (h *Handlers) CreatePoint(w http.ResponseWriter, r *http.Request) {
 		"max_orders_per_window": req.MaxPerWindow,
 		"work_start":            req.WorkStart,
 		"work_end":              req.WorkEnd,
+		"breaks":                req.Breaks,
+		"accept_eta_minutes":    acceptETA,
 	})
 	if err != nil {
 		httpx.WriteError(w, ErrBadCapacity)
@@ -120,13 +169,15 @@ func (h *Handlers) ListPoints(w http.ResponseWriter, r *http.Request) {
 }
 
 type updatePointRequest struct {
-	Title              *string `json:"title"`
-	Address            *string `json:"address"`
-	IsActive           *bool   `json:"is_active"`
-	WindowMinutes      *int    `json:"window_minutes"`
-	MaxOrdersPerWindow *int    `json:"max_orders_per_window"`
-	WorkStart          *string `json:"work_start"`
-	WorkEnd            *string `json:"work_end"`
+	Title              *string     `json:"title"`
+	Address            *string     `json:"address"`
+	IsActive           *bool       `json:"is_active"`
+	WindowMinutes      *int        `json:"window_minutes"`
+	MaxOrdersPerWindow *int        `json:"max_orders_per_window"`
+	WorkStart          *string     `json:"work_start"`
+	WorkEnd            *string     `json:"work_end"`
+	Breaks             *[]breakReq `json:"breaks"`
+	AcceptETAMinutes   *int        `json:"accept_eta_minutes"`
 }
 
 // PATCH /admin/points/{id} — изменить информацию о точке.
@@ -180,6 +231,24 @@ func (h *Handlers) UpdatePoint(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, ErrBadCapacity)
 		return
 	}
+	if req.Breaks != nil {
+		if !validBreaks(*req.Breaks) {
+			httpx.WriteError(w, ErrBadCapacity)
+			return
+		}
+		breaks := make([]Break, 0, len(*req.Breaks))
+		for _, b := range *req.Breaks {
+			breaks = append(breaks, Break{Start: b.Start, End: b.End})
+		}
+		patch.Breaks = &breaks
+	}
+	if req.AcceptETAMinutes != nil {
+		if *req.AcceptETAMinutes < 0 || *req.AcceptETAMinutes > 180 {
+			httpx.WriteError(w, ErrBadCapacity)
+			return
+		}
+		patch.AcceptETAMinutes = req.AcceptETAMinutes
+	}
 
 	point, err := h.store.UpdatePoint(r.Context(), session.UserID, r.PathValue("id"), patch)
 	if err != nil {
@@ -189,19 +258,25 @@ func (h *Handlers) UpdatePoint(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, point)
 }
 
-// GET /admin/points/{id}/menu — меню точки, включая скрытые позиции.
+// GET /admin/points/{id}/menu — меню точки (включая скрытые позиции) и добавки.
 func (h *Handlers) ListMenu(w http.ResponseWriter, r *http.Request) {
 	session, ok := auth.FromContext(r.Context())
 	if !ok {
 		httpx.WriteError(w, httpx.ErrUnauthorized)
 		return
 	}
-	items, err := h.store.ListMenu(r.Context(), session.UserID, r.PathValue("id"))
+	pointID := r.PathValue("id")
+	items, err := h.store.ListMenu(r.Context(), session.UserID, pointID)
 	if err != nil {
 		httpx.WriteError(w, err)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
+	addons, err := h.store.ListAddons(r.Context(), session.UserID, pointID)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items, "addons": addons})
 }
 
 // POST /admin/points/{id}/menu — добавить позицию в меню точки.
@@ -276,6 +351,80 @@ func (h *Handlers) UpdateMenuItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, item)
+}
+
+// POST /admin/points/{id}/addons — добавить добавку в каталог точки.
+func (h *Handlers) CreateAddon(w http.ResponseWriter, r *http.Request) {
+	session, ok := auth.FromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, httpx.ErrUnauthorized)
+		return
+	}
+	req, err := httpx.ReadJSON[addonReq](r)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	req.Title = strings.TrimSpace(req.Title)
+	if req.Title == "" || req.PriceMinor < 0 || req.PrepSeconds < 0 {
+		httpx.WriteError(w, httpx.ErrBadRequest)
+		return
+	}
+	addon, err := h.store.CreateAddon(r.Context(), session.UserID, r.PathValue("id"),
+		req.Title, req.PriceMinor, req.PrepSeconds)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, addon)
+}
+
+type updateAddonRequest struct {
+	Title       *string `json:"title"`
+	PriceMinor  *int64  `json:"price_minor"`
+	PrepSeconds *int    `json:"prep_seconds"`
+	IsAvailable *bool   `json:"is_available"`
+}
+
+// PATCH /admin/addons/{id} — изменить добавку.
+func (h *Handlers) UpdateAddon(w http.ResponseWriter, r *http.Request) {
+	session, ok := auth.FromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, httpx.ErrUnauthorized)
+		return
+	}
+	req, err := httpx.ReadJSON[updateAddonRequest](r)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	patch := AddonPatch{
+		PriceMinor:  req.PriceMinor,
+		PrepSeconds: req.PrepSeconds,
+		IsAvailable: req.IsAvailable,
+	}
+	if req.Title != nil {
+		title := strings.TrimSpace(*req.Title)
+		if title == "" {
+			httpx.WriteError(w, httpx.ErrBadRequest)
+			return
+		}
+		patch.Title = &title
+	}
+	if req.PriceMinor != nil && *req.PriceMinor < 0 {
+		httpx.WriteError(w, httpx.ErrBadRequest)
+		return
+	}
+	if req.PrepSeconds != nil && *req.PrepSeconds < 0 {
+		httpx.WriteError(w, httpx.ErrBadRequest)
+		return
+	}
+	addon, err := h.store.UpdateAddon(r.Context(), session.UserID, r.PathValue("id"), patch)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, addon)
 }
 
 type createBaristaRequest struct {

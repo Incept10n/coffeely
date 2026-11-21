@@ -1,6 +1,7 @@
 package points
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -14,15 +15,17 @@ func TestParseCapacity(t *testing.T) {
 		{"пусто — дефолты", "", defaultCapacity()},
 		{"{} — дефолты", "{}", defaultCapacity()},
 		{"битый json — дефолты", "{not json", defaultCapacity()},
-		{"переопределение лимита", `{"max_orders_per_window":1}`, CapacityConfig{5, 1, "08:00", "20:00"}},
-		{"переопределение окна", `{"window_minutes":10}`, CapacityConfig{10, 3, "08:00", "20:00"}},
+		{"переопределение лимита", `{"max_orders_per_window":1}`, CapacityConfig{WindowMinutes: 5, MaxOrdersPerWindow: 1, WorkStart: "08:00", WorkEnd: "20:00", AcceptETAMinutes: defaultAcceptETA}},
+		{"переопределение окна", `{"window_minutes":10}`, CapacityConfig{WindowMinutes: 10, MaxOrdersPerWindow: 3, WorkStart: "08:00", WorkEnd: "20:00", AcceptETAMinutes: defaultAcceptETA}},
 		{"нули игнорируются", `{"window_minutes":0,"max_orders_per_window":0}`, defaultCapacity()},
-		{"часы работы", `{"work_start":"07:30","work_end":"22:00"}`, CapacityConfig{5, 3, "07:30", "22:00"}},
+		{"часы работы", `{"work_start":"07:30","work_end":"22:00"}`, CapacityConfig{WindowMinutes: 5, MaxOrdersPerWindow: 3, WorkStart: "07:30", WorkEnd: "22:00", AcceptETAMinutes: defaultAcceptETA}},
+		{"перерыв и ETA", `{"breaks":[{"start":"13:00","end":"13:30"}],"accept_eta_minutes":8}`, CapacityConfig{WindowMinutes: 5, MaxOrdersPerWindow: 3, WorkStart: "08:00", WorkEnd: "20:00", Breaks: []Break{{Start: "13:00", End: "13:30"}}, AcceptETAMinutes: 8}},
+		{"ETA вне диапазона — дефолт", `{"accept_eta_minutes":999}`, defaultCapacity()},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := parseCapacity([]byte(tt.raw))
-			if got != tt.want {
+			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("parseCapacity(%q) = %+v, ожидали %+v", tt.raw, got, tt.want)
 			}
 		})
@@ -71,10 +74,31 @@ func TestWindowGrid(t *testing.T) {
 func TestOpenState(t *testing.T) {
 	loc, _ := time.LoadLocation("Europe/Moscow")
 	cfg := defaultCapacity() // 08:00–20:00
-	if open, _ := openState(cfg, "Europe/Moscow", time.Date(2026, 11, 16, 9, 0, 0, 0, loc)); !open {
+	if open, _, _ := openState(cfg, "Europe/Moscow", time.Date(2026, 11, 16, 9, 0, 0, 0, loc)); !open {
 		t.Fatal("09:00 должно быть открыто")
 	}
-	if open, opensAt := openState(cfg, "Europe/Moscow", time.Date(2026, 11, 16, 7, 0, 0, 0, loc)); open || opensAt != "08:00" {
+	if open, opensAt, _ := openState(cfg, "Europe/Moscow", time.Date(2026, 11, 16, 7, 0, 0, 0, loc)); open || opensAt != "08:00" {
 		t.Fatalf("07:00: %v %q", open, opensAt)
+	}
+
+	// Перерыв 13:00–13:30: гость видит «перерыв до 13:30», а не «закрыто».
+	cfg.Breaks = []Break{{Start: "13:00", End: "13:30"}}
+	if open, opensAt, onBreak := openState(cfg, "Europe/Moscow", time.Date(2026, 11, 16, 13, 10, 0, 0, loc)); open || !onBreak || opensAt != "13:30" {
+		t.Fatalf("13:10 на перерыве: open=%v break=%v opens=%q", open, onBreak, opensAt)
+	}
+	if open, _, _ := openState(cfg, "Europe/Moscow", time.Date(2026, 11, 16, 13, 40, 0, 0, loc)); !open {
+		t.Fatal("13:40 после перерыва должно быть открыто")
+	}
+}
+
+func TestBreakOverlapEnd(t *testing.T) {
+	loc, _ := time.LoadLocation("Europe/Moscow")
+	day := func(h, m int) time.Time { return time.Date(2026, 11, 16, h, m, 0, 0, loc) }
+	breaks := []breakRange{{start: 13 * 60, end: 13*60 + 30}}
+	if got, ok := breakOverlapEnd(day(13, 0), day(13, 5), loc, breaks); !ok || !got.Equal(day(13, 30)) {
+		t.Fatalf("окно внутри перерыва: %v %v", got, ok)
+	}
+	if _, ok := breakOverlapEnd(day(14, 0), day(14, 5), loc, breaks); ok {
+		t.Fatal("окно после перерыва не пересекается")
 	}
 }

@@ -78,8 +78,9 @@ func NewHandlers(store *Store, hub *Hub) *Handlers {
 type createOrderRequest struct {
 	PointID string `json:"point_id"`
 	Items   []struct {
-		MenuItemID string `json:"menu_item_id"`
-		Qty        int    `json:"qty"`
+		MenuItemID string   `json:"menu_item_id"`
+		Qty        int      `json:"qty"`
+		Addons     []string `json:"addons"`
 	} `json:"items"`
 }
 
@@ -96,9 +97,9 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, httpx.ErrBadRequest)
 		return
 	}
-	items := make([]Item, len(req.Items))
+	items := make([]CreateItem, len(req.Items))
 	for i, it := range req.Items {
-		items[i] = Item{MenuItemID: it.MenuItemID, Qty: it.Qty}
+		items[i] = CreateItem{MenuItemID: it.MenuItemID, Qty: it.Qty, AddonIDs: it.Addons}
 	}
 	order, err := h.store.Create(r.Context(), req.PointID, session.UserID, items, timeNow())
 	if err != nil {

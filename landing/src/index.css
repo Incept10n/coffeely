@@ -740,6 +740,125 @@ p {
   }
 }
 
+/* Новая точка — заметный блок: добавление точки не должно прятаться в форме. */
+.owner__add-point {
+  border: 2px solid var(--accent);
+  border-radius: calc(var(--radius) + 4px);
+  background: linear-gradient(180deg, rgba(196, 126, 74, 0.1), rgba(255, 255, 255, 0.9));
+  padding: 20px;
+  margin: 18px 0 32px;
+  box-shadow: 0 12px 32px -20px rgba(47, 33, 26, 0.45);
+}
+
+.owner__add-point--collapsed {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.owner__add-point-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.owner__add-point-title {
+  font-family: var(--display);
+  font-size: 22px;
+  margin: 0;
+}
+
+.owner__add-point-note {
+  color: var(--muted);
+  font-size: 14px;
+  margin: 6px 0 16px;
+  max-width: 60ch;
+}
+
+.owner__add-point--collapsed .owner__add-point-note {
+  margin-bottom: 0;
+}
+
+.owner__form--plain {
+  border: none;
+  padding: 0;
+  background: transparent;
+}
+
+.button--accent {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--cream);
+  font-weight: 600;
+}
+
+.owner__menu-editor {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+  margin-bottom: 16px;
+}
+
+.owner__menu-editor-title {
+  font-size: 16px;
+  margin: 0 0 4px;
+}
+
+.owner__hint--tight {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+
+.owner__menu-edit-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr auto;
+  gap: 0 12px;
+  align-items: end;
+}
+
+.owner__menu-remove {
+  margin-bottom: 14px;
+}
+
+@media (max-width: 720px) {
+  .owner__menu-edit-row {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+}
+
+.owner__breaks {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+  margin-bottom: 16px;
+}
+
+.owner__break-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 0 12px;
+  align-items: end;
+}
+
+.owner__break-row .button {
+  margin-bottom: 14px;
+}
+
+@media (max-width: 720px) {
+  .owner__break-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.owner__addons {
+  border-top: 2px solid var(--line);
+  margin-top: 22px;
+  padding-top: 18px;
+}
+
 .tariffs {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

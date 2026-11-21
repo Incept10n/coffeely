@@ -298,10 +298,25 @@ private fun KdsCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = muted,
             )
+            if (entry.status == "paid" && entry.accept_by_at.isNotBlank()) {
+                Text(
+                    "взять в работу к ${hhmm(entry.accept_by_at)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = urgencyColor("now"),
+                    fontWeight = FontWeight.Medium,
+                )
+            }
             if (entry.items.isNotEmpty()) {
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    entry.items.joinToString { "${it.title} ×${it.qty}" },
+                    entry.items.joinToString { item ->
+                        val addons = if (item.addons.isEmpty()) {
+                            ""
+                        } else {
+                            " (" + item.addons.joinToString { it.title } + ")"
+                        }
+                        "${item.title} ×${item.qty}$addons"
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (closed) muted else Color.Unspecified,
                 )
