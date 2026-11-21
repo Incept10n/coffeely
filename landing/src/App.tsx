@@ -407,17 +407,21 @@ function OwnerCabinet() {
   const [points, setPoints] = useState<Point[]>([]);
   const [baristas, setBaristas] = useState<Barista[]>([]);
   const [brand, setBrand] = useState("");
+  const [profileOk, setProfileOk] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
 
   async function refreshData(token: string) {
     const [p, b, profile] = await Promise.all([
       api<{ points: Point[] }>("/admin/points", { token }),
       api<{ baristas: Barista[] }>("/admin/baristas", { token }),
-      api<{ brand_name: string }>("/admin/profile", { token }),
+      // Название кофейни — необязательная часть кабинета: если бэкенд старее
+      // фронтенда и /admin/profile ещё нет, владелец не должен вылетать из входа.
+      api<{ brand_name: string }>("/admin/profile", { token }).catch(() => null),
     ]);
     setPoints(p.points);
     setBaristas(b.baristas);
-    setBrand(profile.brand_name);
+    setProfileOk(profile !== null);
+    if (profile) setBrand(profile.brand_name);
   }
 
   useEffect(() => {
@@ -478,16 +482,18 @@ function OwnerCabinet() {
         window.location.href = "/";
       }}
     >
-      <section className="owner__block">
-        <h3>Кофейня</h3>
-        <BrandForm
-          brand={brand}
-          onSaved={async (name) => {
-            setBrand(name);
-            setNotice("Название кофейни сохранено.");
-          }}
-        />
-      </section>
+      {profileOk && (
+        <section className="owner__block">
+          <h3>Кофейня</h3>
+          <BrandForm
+            brand={brand}
+            onSaved={async (name) => {
+              setBrand(name);
+              setNotice("Название кофейни сохранено.");
+            }}
+          />
+        </section>
+      )}
 
       <section className="owner__block">
         <h3>Тариф</h3>

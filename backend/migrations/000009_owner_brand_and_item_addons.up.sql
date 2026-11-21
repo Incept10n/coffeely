@@ -13,8 +13,9 @@ ALTER TABLE users ADD COLUMN brand_name text NOT NULL DEFAULT '';
 ALTER TABLE addons ADD COLUMN menu_item_id uuid REFERENCES menu_items (id) ON DELETE CASCADE;
 
 -- Совместимость: каждая добавка точки становится добавкой каждого её товара.
-INSERT INTO addons (menu_item_id, title, price_minor, prep_seconds, is_available)
-SELECT mi.id, a.title, a.price_minor, a.prep_seconds, a.is_available
+-- point_id ещё NOT NULL (колонку убираем ниже), поэтому копируем и его.
+INSERT INTO addons (point_id, menu_item_id, title, price_minor, prep_seconds, is_available)
+SELECT a.point_id, mi.id, a.title, a.price_minor, a.prep_seconds, a.is_available
 FROM addons a
 JOIN menu_items mi ON mi.point_id = a.point_id;
 
