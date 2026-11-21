@@ -395,9 +395,11 @@ type Addon = {
 };
 
 const TARIFFS = [
-  { name: "Островок", price: "1 500 ₽/мес", note: "одна точка, базовая ёмкость" },
-  { name: "Стандарт", price: "2 500 ₽/мес", note: "точка с потоком, приоритет поддержки" },
-  { name: "Высокий трафик", price: "4 900 ₽/мес", note: "несколько окон и бариста, расширенная настройка" },
+  {
+    name: "Единый тариф",
+    price: "2 500 ₽/мес",
+    note: "за одну точку — без разбивки по типу точки: островок, кофейня, высокий трафик",
+  },
 ];
 
 function OwnerCabinet() {
@@ -488,7 +490,7 @@ function OwnerCabinet() {
       </section>
 
       <section className="owner__block">
-        <h3>Предложения</h3>
+        <h3>Тариф</h3>
         <div className="tariffs">
           {TARIFFS.map((t) => (
             <div className="tariff" key={t.name}>
