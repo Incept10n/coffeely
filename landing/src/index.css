@@ -853,10 +853,39 @@ p {
   }
 }
 
-.owner__addons {
-  border-top: 2px solid var(--line);
-  margin-top: 22px;
-  padding-top: 18px;
+.owner__item-addons {
+  border-top: 1px dashed var(--line);
+  margin-top: 12px;
+  padding: 12px 0 0;
+}
+
+.owner__addon-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.owner__addon-item {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 10px 2px;
+  background: rgba(139, 94, 60, 0.03);
+}
+
+.owner__addon-add {
+  grid-template-columns: 2fr 1fr 1fr auto;
+  align-items: end;
+}
+
+.owner__addon-add .button {
+  margin-bottom: 14px;
+}
+
+@media (max-width: 720px) {
+  .owner__addon-add {
+    grid-template-columns: 1fr;
+  }
 }
 
 .tariffs {

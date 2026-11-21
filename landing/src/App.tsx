@@ -382,10 +382,12 @@ type MenuItem = {
   price_minor: number;
   prep_seconds: number;
   is_available: boolean;
+  addons: Addon[];
 };
 
 type Addon = {
   id: string;
+  menu_item_id: string;
   title: string;
   price_minor: number;
   prep_seconds: number;
@@ -402,15 +404,18 @@ function OwnerCabinet() {
   const [state, setState] = useState<"loading" | "login" | "ready">("loading");
   const [points, setPoints] = useState<Point[]>([]);
   const [baristas, setBaristas] = useState<Barista[]>([]);
+  const [brand, setBrand] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
 
   async function refreshData(token: string) {
-    const [p, b] = await Promise.all([
+    const [p, b, profile] = await Promise.all([
       api<{ points: Point[] }>("/admin/points", { token }),
       api<{ baristas: Barista[] }>("/admin/baristas", { token }),
+      api<{ brand_name: string }>("/admin/profile", { token }),
     ]);
     setPoints(p.points);
     setBaristas(b.baristas);
+    setBrand(profile.brand_name);
   }
 
   useEffect(() => {
@@ -458,11 +463,11 @@ function OwnerCabinet() {
 
   return (
     <OwnerShell
-      title="Личный кабинет"
+      title={brand || "Личный кабинет"}
       subtitle={
         points.length === 0
           ? "Создайте первую точку — она появится в приложении у гостей."
-          : `Точек: ${points.length} · бариста: ${baristas.length}`
+          : `${brand ? `${brand} · ` : ""}Точек: ${points.length} · бариста: ${baristas.length}`
       }
       onLogout={() => {
         const t = loadTokens();
@@ -471,6 +476,17 @@ function OwnerCabinet() {
         window.location.href = "/";
       }}
     >
+      <section className="owner__block">
+        <h3>Кофейня</h3>
+        <BrandForm
+          brand={brand}
+          onSaved={async (name) => {
+            setBrand(name);
+            setNotice("Название кофейни сохранено.");
+          }}
+        />
+      </section>
+
       <section className="owner__block">
         <h3>Предложения</h3>
         <div className="tariffs">
@@ -543,6 +559,69 @@ function OwnerCabinet() {
 
       {notice && <p className="owner__hint">{notice}</p>}
     </OwnerShell>
+  );
+}
+
+// Название кофейни — общее для кабинета, не привязано к точке. Точки
+// сохраняют свои витринные названия, бренд показывается гостям рядом с ними.
+function BrandForm({
+  brand,
+  onSaved,
+}: {
+  brand: string;
+  onSaved: (name: string) => void | Promise<void>;
+}) {
+  const [name, setName] = useState(brand);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => setName(brand), [brand]);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api<{ brand_name: string }>("/admin/profile", {
+        method: "PATCH",
+        body: { brand_name: name.trim() },
+        token: loadTokens()?.access,
+      });
+      setName(res.brand_name);
+      await onSaved(res.brand_name);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ошибка сети");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="owner__form owner__form--plain" onSubmit={submit}>
+      <p className="owner__hint">
+        Как называется ваша кофейня. Это главное имя бренда — точки ниже сохраняют
+        свои названия (например, «на Ленина»).
+      </p>
+      <div className="owner__row">
+        <label className="field" style={{ flex: "1 1 280px" }}>
+          <span>Название кофейни</span>
+          <input
+            value={name}
+            maxLength={80}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="coffeely"
+          />
+        </label>
+        <button
+          className="button"
+          style={{ alignSelf: "flex-end", marginBottom: 14 }}
+          disabled={busy || name.trim() === brand}
+        >
+          {busy ? "Сохраняем…" : "Сохранить"}
+        </button>
+      </div>
+      {error && <p className="owner__error">{error}</p>}
+    </form>
   );
 }
 
@@ -709,7 +788,7 @@ function AddPointForm({
           </p>
         </div>
         <button type="button" className="button button--accent" onClick={() => setOpen(true)}>
-          ＋ Добавить точку
+          + Добавить точку
         </button>
       </div>
     );
@@ -819,7 +898,7 @@ function AddPointForm({
             className="button button--ghost"
             onClick={() => setForm((f) => ({ ...f, menu: [...f.menu, emptyMenuRow()] }))}
           >
-            ＋ Ещё товар
+            + Ещё товар
           </button>
         </div>
 
@@ -884,7 +963,7 @@ function BreaksEditor({
         className="button button--ghost"
         onClick={() => onChange([...breaks, { start: "13:00", end: "13:30" }])}
       >
-        ＋ Добавить перерыв
+        + Добавить перерыв
       </button>
     </div>
   );
@@ -1053,26 +1132,19 @@ function EditPointForm({ point, onSaved }: { point: Point; onSaved: () => void |
 
 function PointMenu({ point }: { point: Point }) {
   const [items, setItems] = useState<MenuItem[] | null>(null);
-  const [addons, setAddons] = useState<Addon[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [price, setPrice] = useState("");
   const [prep, setPrep] = useState("180");
-  const [addonTitle, setAddonTitle] = useState("");
-  const [addonPrice, setAddonPrice] = useState("");
-  const [addonPrep, setAddonPrep] = useState("0");
   const [busy, setBusy] = useState(false);
-  const [addonBusy, setAddonBusy] = useState(false);
 
   useEffect(() => {
     void (async () => {
       try {
-        const res = await api<{ items: MenuItem[]; addons: Addon[] }>(
-          `/admin/points/${point.id}/menu`,
-          { token: loadTokens()?.access },
-        );
-        setItems(res.items);
-        setAddons(res.addons ?? []);
+        const res = await api<{ items: MenuItem[] }>(`/admin/points/${point.id}/menu`, {
+          token: loadTokens()?.access,
+        });
+        setItems((res.items ?? []).map((it) => ({ ...it, addons: it.addons ?? [] })));
       } catch (err) {
         setError(err instanceof Error ? err.message : "ошибка сети");
       }
@@ -1099,8 +1171,11 @@ function PointMenu({ point }: { point: Point }) {
         body: { title: title.trim(), price_minor: priceMinor, prep_seconds: Number(prep) },
         token: loadTokens()?.access,
       });
+      const created = { ...item, addons: item.addons ?? [] };
       setItems((cur) =>
-        cur ? [...cur, item].sort((a, b) => a.title.localeCompare(b.title, "ru")) : [item],
+        cur
+          ? [...cur, created].sort((a, b) => a.title.localeCompare(b.title, "ru"))
+          : [created],
       );
       setTitle("");
       setPrice("");
@@ -1111,47 +1186,11 @@ function PointMenu({ point }: { point: Point }) {
     }
   }
 
-  async function addAddon(e: FormEvent) {
-    e.preventDefault();
-    const priceMinor = rubToMinor(addonPrice || "0");
-    if (
-      !addonTitle.trim() ||
-      !Number.isFinite(priceMinor) ||
-      priceMinor < 0 ||
-      !Number.isFinite(Number(addonPrep)) ||
-      Number(addonPrep) < 0
-    ) {
-      setError("Добавка: нужно название, цена в рублях (0 — бесплатно) и время в секундах");
-      return;
-    }
-    setAddonBusy(true);
-    setError(null);
-    try {
-      const addon = await api<Addon>(`/admin/points/${point.id}/addons`, {
-        body: {
-          title: addonTitle.trim(),
-          price_minor: priceMinor,
-          prep_seconds: Number(addonPrep),
-        },
-        token: loadTokens()?.access,
-      });
-      setAddons((cur) =>
-        cur ? [...cur, addon].sort((a, b) => a.title.localeCompare(b.title, "ru")) : [addon],
-      );
-      setAddonTitle("");
-      setAddonPrice("");
-      setAddonPrep("0");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "ошибка сети");
-    } finally {
-      setAddonBusy(false);
-    }
-  }
-
   return (
     <div className="owner__menu">
       <p className="owner__hint">
         Товары точки: цена и время приготовления влияют на расчёт времени готовности.
+        Добавки настраиваются у каждого товара отдельно — у каких-то их может не быть.
       </p>
       {error && <p className="owner__error">{error}</p>}
       {items === null ? (
@@ -1190,32 +1229,158 @@ function PointMenu({ point }: { point: Point }) {
           {busy ? "Добавляем…" : "Добавить товар"}
         </button>
       </form>
+    </div>
+  );
+}
 
-      <div className="owner__addons">
-        <h4 className="owner__menu-editor-title">Добавки для кофе</h4>
-        <p className="owner__hint owner__hint--tight">
-          Сироп, овсяное молоко, дополнительный шот. Гость выбирает их к напитку,
-          цена прибавляется к заказу.
-        </p>
-        {addons === null ? (
-          <p className="owner__hint">Загружаем добавки…</p>
-        ) : addons.length === 0 ? (
-          <p className="owner__hint">Добавок пока нет.</p>
-        ) : (
-          <div className="owner__menu-list">
-            {addons.map((a) => (
-              <AddonRow
-                key={a.id}
-                addon={a}
-                onSaved={(updated) =>
-                  setAddons((cur) => cur && cur.map((x) => (x.id === updated.id ? updated : x)))
-                }
-              />
-            ))}
-          </div>
-        )}
-        <form className="owner__form" onSubmit={addAddon}>
-          <div className="owner__menu-row">
+function MenuItemRow({ item, onSaved }: { item: MenuItem; onSaved: (item: MenuItem) => void }) {
+  const [title, setTitle] = useState(item.title);
+  const [price, setPrice] = useState(minorToRub(item.price_minor));
+  const [prep, setPrep] = useState(String(item.prep_seconds));
+  const [addons, setAddons] = useState<Addon[]>(item.addons ?? []);
+  const [addonsOpen, setAddonsOpen] = useState(false);
+  const [addonTitle, setAddonTitle] = useState("");
+  const [addonPrice, setAddonPrice] = useState("");
+  const [addonPrep, setAddonPrep] = useState("0");
+  const [addonBusy, setAddonBusy] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(patch: Record<string, unknown>) {
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await api<MenuItem>(`/admin/menu/${item.id}`, {
+        method: "PATCH",
+        body: patch,
+        token: loadTokens()?.access,
+      });
+      onSaved({ ...updated, addons });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ошибка сети");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveFields(e: FormEvent) {
+    e.preventDefault();
+    const priceMinor = rubToMinor(price);
+    if (
+      !title.trim() ||
+      !Number.isFinite(priceMinor) ||
+      priceMinor <= 0 ||
+      !Number.isFinite(Number(prep)) ||
+      Number(prep) <= 0
+    ) {
+      setError("Проверьте название, цену и время приготовления");
+      return;
+    }
+    await save({ title: title.trim(), price_minor: priceMinor, prep_seconds: Number(prep) });
+  }
+
+  async function addAddon(e: FormEvent) {
+    e.preventDefault();
+    const priceMinor = rubToMinor(addonPrice || "0");
+    if (
+      !addonTitle.trim() ||
+      !Number.isFinite(priceMinor) ||
+      priceMinor < 0 ||
+      !Number.isFinite(Number(addonPrep)) ||
+      Number(addonPrep) < 0
+    ) {
+      setError("Добавка: нужно название, цена в рублях (0 — бесплатно) и время в секундах");
+      return;
+    }
+    setAddonBusy(true);
+    setError(null);
+    try {
+      const addon = await api<Addon>(`/admin/menu/${item.id}/addons`, {
+        body: {
+          title: addonTitle.trim(),
+          price_minor: priceMinor,
+          prep_seconds: Number(addonPrep),
+        },
+        token: loadTokens()?.access,
+      });
+      setAddons((cur) =>
+        [...cur, addon].sort((a, b) => a.title.localeCompare(b.title, "ru")),
+      );
+      setAddonTitle("");
+      setAddonPrice("");
+      setAddonPrep("0");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ошибка сети");
+    } finally {
+      setAddonBusy(false);
+    }
+  }
+
+  return (
+    <div className="owner__menu-item">
+      <form onSubmit={saveFields}>
+        <div className="owner__menu-row">
+          <label className="field">
+            <span>Название</span>
+            <input required value={title} onChange={(e) => setTitle(e.target.value)} />
+          </label>
+          <label className="field">
+            <span>Цена, ₽</span>
+            <input inputMode="decimal" required value={price} onChange={(e) => setPrice(e.target.value)} />
+          </label>
+          <label className="field">
+            <span>Готовить, сек</span>
+            <input type="number" min={1} required value={prep} onChange={(e) => setPrep(e.target.value)} />
+          </label>
+        </div>
+        <div className="owner__row">
+          <button className="button" disabled={busy}>
+            {busy ? "Сохраняем…" : "Сохранить"}
+          </button>
+          <button
+            type="button"
+            className="button button--ghost"
+            disabled={busy}
+            onClick={() => void save({ is_available: !item.is_available })}
+          >
+            {item.is_available ? "Скрыть из меню" : "Вернуть в продажу"}
+          </button>
+          <button
+            type="button"
+            className="button button--ghost"
+            onClick={() => setAddonsOpen((v) => !v)}
+          >
+            {addonsOpen
+              ? "Свернуть добавки"
+              : `Добавки${addons.length > 0 ? ` · ${addons.length}` : " · нет"}`}
+          </button>
+          <span className="badge">{item.is_available ? "в продаже" : "скрыт"}</span>
+        </div>
+      </form>
+
+      {addonsOpen && (
+        <div className="owner__item-addons">
+          <p className="owner__hint owner__hint--tight">
+            Добавки только к «{item.title}»: сироп, молоко, доп. шот. Гость выбирает
+            их при заказе, цена прибавляется к чеку.
+          </p>
+          {addons.length === 0 ? (
+            <p className="owner__hint owner__hint--tight">У этого товара добавок нет.</p>
+          ) : (
+            <div className="owner__addon-list">
+              {addons.map((a) => (
+                <AddonRow
+                  key={a.id}
+                  addon={a}
+                  onSaved={(updated) =>
+                    setAddons((cur) => cur.map((x) => (x.id === updated.id ? updated : x)))
+                  }
+                  onDeleted={(id) => setAddons((cur) => cur.filter((x) => x.id !== id))}
+                />
+              ))}
+            </div>
+          )}
+          <form className="owner__menu-row owner__addon-add" onSubmit={addAddon}>
             <label className="field">
               <span>Новая добавка</span>
               <input
@@ -1242,94 +1407,28 @@ function PointMenu({ point }: { point: Point }) {
                 onChange={(e) => setAddonPrep(e.target.value)}
               />
             </label>
-          </div>
-          <button className="button" disabled={addonBusy}>
-            {addonBusy ? "Добавляем…" : "Добавить добавку"}
-          </button>
-        </form>
-      </div>
-    </div>
-  );
-}
-
-function MenuItemRow({ item, onSaved }: { item: MenuItem; onSaved: (item: MenuItem) => void }) {
-  const [title, setTitle] = useState(item.title);
-  const [price, setPrice] = useState(minorToRub(item.price_minor));
-  const [prep, setPrep] = useState(String(item.prep_seconds));
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function save(patch: Record<string, unknown>) {
-    setBusy(true);
-    setError(null);
-    try {
-      const updated = await api<MenuItem>(`/admin/menu/${item.id}`, {
-        method: "PATCH",
-        body: patch,
-        token: loadTokens()?.access,
-      });
-      onSaved(updated);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "ошибка сети");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function saveFields(e: FormEvent) {
-    e.preventDefault();
-    const priceMinor = rubToMinor(price);
-    if (
-      !title.trim() ||
-      !Number.isFinite(priceMinor) ||
-      priceMinor <= 0 ||
-      !Number.isFinite(Number(prep)) ||
-      Number(prep) <= 0
-    ) {
-      setError("Проверьте название, цену и время приготовления");
-      return;
-    }
-    await save({ title: title.trim(), price_minor: priceMinor, prep_seconds: Number(prep) });
-  }
-
-  return (
-    <form className="owner__menu-item" onSubmit={saveFields}>
-      <div className="owner__menu-row">
-        <label className="field">
-          <span>Название</span>
-          <input required value={title} onChange={(e) => setTitle(e.target.value)} />
-        </label>
-        <label className="field">
-          <span>Цена, ₽</span>
-          <input inputMode="decimal" required value={price} onChange={(e) => setPrice(e.target.value)} />
-        </label>
-        <label className="field">
-          <span>Готовить, сек</span>
-          <input type="number" min={1} required value={prep} onChange={(e) => setPrep(e.target.value)} />
-        </label>
-      </div>
-      <div className="owner__row">
-        <button className="button" disabled={busy}>
-          {busy ? "Сохраняем…" : "Сохранить"}
-        </button>
-        <button
-          type="button"
-          className="button button--ghost"
-          disabled={busy}
-          onClick={() => void save({ is_available: !item.is_available })}
-        >
-          {item.is_available ? "Скрыть из меню" : "Вернуть в продажу"}
-        </button>
-        <span className="badge">{item.is_available ? "в продаже" : "скрыт"}</span>
-      </div>
+            <button className="button" disabled={addonBusy}>
+              {addonBusy ? "Добавляем…" : "Добавить"}
+            </button>
+          </form>
+        </div>
+      )}
       {error && <p className="owner__error">{error}</p>}
-    </form>
+    </div>
   );
 }
 
 /* ------------------------- Добавки к напиткам ---------------------------- */
 
-function AddonRow({ addon, onSaved }: { addon: Addon; onSaved: (addon: Addon) => void }) {
+function AddonRow({
+  addon,
+  onSaved,
+  onDeleted,
+}: {
+  addon: Addon;
+  onSaved: (addon: Addon) => void;
+  onDeleted: (id: string) => void;
+}) {
   const [title, setTitle] = useState(addon.title);
   const [price, setPrice] = useState(minorToRub(addon.price_minor));
   const [prep, setPrep] = useState(String(addon.prep_seconds));
@@ -1369,8 +1468,25 @@ function AddonRow({ addon, onSaved }: { addon: Addon; onSaved: (addon: Addon) =>
     await save({ title: title.trim(), price_minor: priceMinor, prep_seconds: Number(prep) });
   }
 
+  async function remove() {
+    if (!window.confirm(`Убрать добавку «${addon.title}»?`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/admin/addons/${addon.id}`, {
+        method: "DELETE",
+        token: loadTokens()?.access,
+      });
+      onDeleted(addon.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ошибка сети");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
-    <form className="owner__menu-item" onSubmit={saveFields}>
+    <form className="owner__addon-item" onSubmit={saveFields}>
       <div className="owner__menu-row">
         <label className="field">
           <span>Добавка</span>
@@ -1395,7 +1511,15 @@ function AddonRow({ addon, onSaved }: { addon: Addon; onSaved: (addon: Addon) =>
           disabled={busy}
           onClick={() => void save({ is_available: !addon.is_available })}
         >
-          {addon.is_available ? "Скрыть из меню" : "Вернуть в продажу"}
+          {addon.is_available ? "Скрыть" : "Вернуть"}
+        </button>
+        <button
+          type="button"
+          className="button button--ghost"
+          disabled={busy}
+          onClick={() => void remove()}
+        >
+          Убрать
         </button>
         <span className="badge">{addon.is_available ? "в продаже" : "скрыта"}</span>
       </div>

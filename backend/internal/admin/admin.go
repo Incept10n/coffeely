@@ -52,23 +52,30 @@ type Barista struct {
 }
 
 // MenuItem — позиция меню точки. Владелец видит и скрытые позиции: их можно
-// вернуть в продажу редактированием.
+// вернуть в продажу редактированием. Addons — добавки именно этого товара.
 type MenuItem struct {
+	ID          string  `json:"id"`
+	Title       string  `json:"title"`
+	PriceMinor  int64   `json:"price_minor"`
+	PrepSeconds int     `json:"prep_seconds"`
+	IsAvailable bool    `json:"is_available"`
+	Addons      []Addon `json:"addons"`
+}
+
+// Addon — добавка к конкретному напитку (сироп, овсяное молоко, доп. шот).
+// Наборы у товаров независимы, у части товаров добавок может не быть вовсе.
+type Addon struct {
 	ID          string `json:"id"`
+	MenuItemID  string `json:"menu_item_id"`
 	Title       string `json:"title"`
 	PriceMinor  int64  `json:"price_minor"`
 	PrepSeconds int    `json:"prep_seconds"`
 	IsAvailable bool   `json:"is_available"`
 }
 
-// Addon — добавка к напитку (сироп, овсяное молоко, доп. шот). Владелец ведёт
-// каталог добавок точки; гость выбирает их к позиции заказа.
-type Addon struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	PriceMinor  int64  `json:"price_minor"`
-	PrepSeconds int    `json:"prep_seconds"`
-	IsAvailable bool   `json:"is_available"`
+// Profile — настройки владельца, не привязанные к точке.
+type Profile struct {
+	BrandName string `json:"brand_name"`
 }
 
 // Break — перерыв в работе точки ("HH:MM" локального времени точки).
@@ -392,6 +399,7 @@ func (s *Store) UpdateBarista(ctx context.Context, ownerID, baristaID string, pa
 }
 
 // ListMenu — все позиции меню точки, включая скрытые из продажи.
+// ListMenu — меню точки (включая скрытые позиции) вместе с добавками товаров.
 func (s *Store) ListMenu(ctx context.Context, ownerID, pointID string) ([]MenuItem, error) {
 	owned, err := s.PointOwnedBy(ctx, ownerID, pointID)
 	if err != nil {
@@ -409,14 +417,46 @@ func (s *Store) ListMenu(ctx context.Context, ownerID, pointID string) ([]MenuIt
 	}
 	defer rows.Close()
 	items := []MenuItem{}
+	ids := make([]string, 0)
 	for rows.Next() {
 		var m MenuItem
 		if err := rows.Scan(&m.ID, &m.Title, &m.PriceMinor, &m.PrepSeconds, &m.IsAvailable); err != nil {
 			return nil, fmt.Errorf("admin: menu scan: %w", err)
 		}
+		m.Addons = []Addon{}
 		items = append(items, m)
+		ids = append(ids, m.ID)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return items, nil
+	}
+
+	addonRows, err := s.pool.Query(ctx, `
+		SELECT id, menu_item_id, title, price_minor, prep_seconds, is_available
+		FROM addons WHERE menu_item_id = ANY($1::uuid[])
+		ORDER BY title`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("admin: addons list: %w", err)
+	}
+	defer addonRows.Close()
+	index := make(map[string]int, len(items))
+	for i, m := range items {
+		index[m.ID] = i
+	}
+	for addonRows.Next() {
+		var a Addon
+		if err := addonRows.Scan(&a.ID, &a.MenuItemID, &a.Title, &a.PriceMinor,
+			&a.PrepSeconds, &a.IsAvailable); err != nil {
+			return nil, fmt.Errorf("admin: addons scan: %w", err)
+		}
+		if i, ok := index[a.MenuItemID]; ok {
+			items[i].Addons = append(items[i].Addons, a)
+		}
+	}
+	return items, addonRows.Err()
 }
 
 // CreateMenuItem — новая позиция меню точки.
@@ -504,50 +544,28 @@ func isUniqueViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
-// ListAddons — все добавки точки, включая скрытые.
-func (s *Store) ListAddons(ctx context.Context, ownerID, pointID string) ([]Addon, error) {
-	owned, err := s.PointOwnedBy(ctx, ownerID, pointID)
-	if err != nil {
-		return nil, fmt.Errorf("admin: addons owner check: %w", err)
-	}
-	if !owned {
-		return nil, ErrPointNotFound
-	}
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, title, price_minor, prep_seconds, is_available
-		FROM addons WHERE point_id = $1
-		ORDER BY title`, pointID)
-	if err != nil {
-		return nil, fmt.Errorf("admin: addons list: %w", err)
-	}
-	defer rows.Close()
-	items := []Addon{}
-	for rows.Next() {
-		var a Addon
-		if err := rows.Scan(&a.ID, &a.Title, &a.PriceMinor, &a.PrepSeconds, &a.IsAvailable); err != nil {
-			return nil, fmt.Errorf("admin: addons scan: %w", err)
-		}
-		items = append(items, a)
-	}
-	return items, rows.Err()
-}
-
-// CreateAddon — новая добавка точки.
-func (s *Store) CreateAddon(ctx context.Context, ownerID, pointID, title string, priceMinor int64, prepSeconds int) (Addon, error) {
+// CreateAddon — новая добавка к товару. Товар обязан принадлежать точке
+// владельца: чужие меню недоступны.
+func (s *Store) CreateAddon(ctx context.Context, ownerID, menuItemID, title string, priceMinor int64, prepSeconds int) (Addon, error) {
 	var a Addon
-	owned, err := s.PointOwnedBy(ctx, ownerID, pointID)
-	if err != nil {
-		return a, fmt.Errorf("admin: addon owner check: %w", err)
+	var pointID string
+	err := s.pool.QueryRow(ctx, `
+		SELECT mi.point_id
+		FROM menu_items mi JOIN points p ON p.id = mi.point_id
+		WHERE mi.id = $1 AND p.owner_id = $2`, menuItemID, ownerID,
+	).Scan(&pointID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return a, ErrMenuItemMissing
 	}
-	if !owned {
-		return a, ErrPointNotFound
+	if err != nil {
+		return a, fmt.Errorf("admin: addon menu item check: %w", err)
 	}
 	err = s.pool.QueryRow(ctx, `
-		INSERT INTO addons (point_id, title, price_minor, prep_seconds)
+		INSERT INTO addons (menu_item_id, title, price_minor, prep_seconds)
 		VALUES ($1, $2, $3, $4)
-		RETURNING id, title, price_minor, prep_seconds, is_available`,
-		pointID, title, priceMinor, prepSeconds,
-	).Scan(&a.ID, &a.Title, &a.PriceMinor, &a.PrepSeconds, &a.IsAvailable)
+		RETURNING id, menu_item_id, title, price_minor, prep_seconds, is_available`,
+		menuItemID, title, priceMinor, prepSeconds,
+	).Scan(&a.ID, &a.MenuItemID, &a.Title, &a.PriceMinor, &a.PrepSeconds, &a.IsAvailable)
 	if err != nil {
 		return a, fmt.Errorf("admin: addon insert: %w", err)
 	}
@@ -572,12 +590,13 @@ func (s *Store) UpdateAddon(ctx context.Context, ownerID, addonID string, patch 
 	defer tx.Rollback(ctx)
 
 	err = tx.QueryRow(ctx, `
-		SELECT a.id, a.title, a.price_minor, a.prep_seconds, a.is_available
+		SELECT a.id, a.menu_item_id, a.title, a.price_minor, a.prep_seconds, a.is_available
 		FROM addons a
-		JOIN points p ON p.id = a.point_id
+		JOIN menu_items mi ON mi.id = a.menu_item_id
+		JOIN points p ON p.id = mi.point_id
 		WHERE a.id = $1 AND p.owner_id = $2
 		FOR UPDATE OF a`, addonID, ownerID,
-	).Scan(&a.ID, &a.Title, &a.PriceMinor, &a.PrepSeconds, &a.IsAvailable)
+	).Scan(&a.ID, &a.MenuItemID, &a.Title, &a.PriceMinor, &a.PrepSeconds, &a.IsAvailable)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return a, ErrAddonMissing
 	}
@@ -610,4 +629,50 @@ func (s *Store) UpdateAddon(ctx context.Context, ownerID, addonID string, patch 
 		return a, fmt.Errorf("admin: addon update commit: %w", err)
 	}
 	return a, nil
+}
+
+// DeleteAddon — удаляет добавку, которая ещё не попала в историю заказов
+// (в order_item_addons хранится снимок). Чужую добавку вернёт addon_not_found.
+func (s *Store) DeleteAddon(ctx context.Context, ownerID, addonID string) error {
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM addons a
+		USING menu_items mi, points p
+		WHERE a.id = $1 AND mi.id = a.menu_item_id AND p.id = mi.point_id AND p.owner_id = $2`,
+		addonID, ownerID)
+	if err != nil {
+		return fmt.Errorf("admin: addon delete: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrAddonMissing
+	}
+	return nil
+}
+
+// Profile — настройки владельца (название кофейни).
+func (s *Store) Profile(ctx context.Context, ownerID string) (Profile, error) {
+	var p Profile
+	err := s.pool.QueryRow(ctx,
+		`SELECT brand_name FROM users WHERE id = $1 AND role = 'owner'`, ownerID,
+	).Scan(&p.BrandName)
+	if err != nil {
+		return p, fmt.Errorf("admin: profile: %w", err)
+	}
+	return p, nil
+}
+
+// UpdateProfile — сохраняет название кофейни.
+func (s *Store) UpdateProfile(ctx context.Context, ownerID, brandName string) (Profile, error) {
+	var p Profile
+	err := s.pool.QueryRow(ctx, `
+		UPDATE users SET brand_name = $2
+		WHERE id = $1 AND role = 'owner'
+		RETURNING brand_name`, ownerID, brandName,
+	).Scan(&p.BrandName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return p, httpx.ErrForbidden
+	}
+	if err != nil {
+		return p, fmt.Errorf("admin: profile update: %w", err)
+	}
+	return p, nil
 }

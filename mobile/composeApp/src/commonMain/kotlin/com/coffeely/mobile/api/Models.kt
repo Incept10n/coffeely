@@ -51,6 +51,7 @@ data class PointLoadDto(
 data class PointDto(
     val id: String,
     val title: String,
+    val brand_name: String = "",
     val address: String = "",
     val timezone: String = "",
     val load: PointLoadDto = PointLoadDto(),
@@ -59,10 +60,8 @@ data class PointDto(
 @Serializable
 data class PointsResponse(val points: List<PointDto> = emptyList())
 
-@Serializable
-data class MenuItemDto(val id: String, val title: String, val price_minor: Long, val prep_seconds: Int)
-
-// Добавка к напитку: сироп, овсяное молоко, доп. шот.
+// Добавка к напитку: сироп, овсяное молоко, доп. шот. Набор — у каждого
+// товара свой, у части товаров добавок нет вовсе.
 @Serializable
 data class AddonDto(
     val id: String,
@@ -72,10 +71,16 @@ data class AddonDto(
 )
 
 @Serializable
-data class MenuResponse(
-    val menu: List<MenuItemDto> = emptyList(),
+data class MenuItemDto(
+    val id: String,
+    val title: String,
+    val price_minor: Long,
+    val prep_seconds: Int,
     val addons: List<AddonDto> = emptyList(),
 )
+
+@Serializable
+data class MenuResponse(val menu: List<MenuItemDto> = emptyList())
 
 @Serializable
 data class OrderAddonDto(

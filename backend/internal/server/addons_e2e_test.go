@@ -59,26 +59,69 @@ func TestAddonsAndAcceptEtaE2E(t *testing.T) {
 	}
 	menuID, _ := items[0].(map[string]any)["id"].(string)
 
-	status, resp = e.doJSON(t, "POST", "/admin/points/"+pointID+"/addons", ownerAccess, map[string]any{
+	status, resp = e.doJSON(t, "POST", "/admin/menu/"+menuID+"/addons", ownerAccess, map[string]any{
 		"title": "Сироп карамель", "price_minor": 5000, "prep_seconds": 0,
 	})
 	if status != http.StatusCreated {
 		t.Fatalf("admin addons: %d: %v", status, resp)
 	}
 	addonID, _ := resp["id"].(string)
-	if addonID == "" || resp["title"] != "Сироп карамель" {
+	if addonID == "" || resp["title"] != "Сироп карамель" || resp["menu_item_id"] != menuID {
 		t.Fatalf("admin addons: не создалась: %v", resp)
 	}
 
-	// Гость видит добавку в меню точки.
+	// Бренд кофейни — один на кабинет, точки сохраняют свои названия.
+	status, resp = e.doJSON(t, "PATCH", "/admin/profile", ownerAccess,
+		map[string]any{"brand_name": "Сиропная кофейня"})
+	if status != http.StatusOK || resp["brand_name"] != "Сиропная кофейня" {
+		t.Fatalf("admin profile: %d: %v", status, resp)
+	}
+
+	// Второй товар без добавок: наборы у товаров независимы.
+	status, _ = e.doJSON(t, "POST", "/admin/points/"+pointID+"/menu", ownerAccess, map[string]any{
+		"title": "Чай", "price_minor": 12000, "prep_seconds": 60,
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("admin menu tea: %d", status)
+	}
+
+	// Гость видит добавку только у капучино; у чая добавок нет.
 	clientAccess := registerClient(t, e)
 	status, resp = e.doJSON(t, "GET", "/points/"+pointID+"/menu", clientAccess, nil)
 	if status != http.StatusOK {
 		t.Fatalf("client menu: %d: %v", status, resp)
 	}
-	addons, _ := resp["addons"].([]any)
-	if len(addons) != 1 || addons[0].(map[string]any)["title"] != "Сироп карамель" {
-		t.Fatalf("client menu: добавка не видна: %v", resp)
+	menu, _ := resp["menu"].([]any)
+	addonsByTitle := map[string][]any{}
+	for _, raw := range menu {
+		it, _ := raw.(map[string]any)
+		title, _ := it["title"].(string)
+		list, _ := it["addons"].([]any)
+		addonsByTitle[title] = list
+	}
+	if list := addonsByTitle["Капучино"]; len(list) != 1 ||
+		list[0].(map[string]any)["title"] != "Сироп карамель" {
+		t.Fatalf("client menu: добавка не видна у капучино: %v", resp)
+	}
+	if list := addonsByTitle["Чай"]; len(list) != 0 {
+		t.Fatalf("client menu: у чая не должно быть добавок: %v", resp)
+	}
+
+	// Клиент видит бренд кофейни рядом с точкой.
+	status, resp = e.doJSON(t, "GET", "/points", clientAccess, nil)
+	if status != http.StatusOK {
+		t.Fatalf("client points: %d: %v", status, resp)
+	}
+	foundBrand := false
+	list, _ := resp["points"].([]any)
+	for _, raw := range list {
+		p, _ := raw.(map[string]any)
+		if p["id"] == pointID && p["brand_name"] == "Сиропная кофейня" {
+			foundBrand = true
+		}
+	}
+	if !foundBrand {
+		t.Fatalf("client points: бренд не виден: %v", resp)
 	}
 
 	// Заказ с добавкой: цена добавки входит в итог, ETA баристы заполнена.
@@ -122,7 +165,13 @@ func TestAddonsAndAcceptEtaE2E(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("client menu после скрытия: %d: %v", status, resp)
 	}
-	if addons, _ = resp["addons"].([]any); len(addons) != 0 {
-		t.Fatalf("скрытая добавка видна гостю: %v", resp)
+	menu, _ = resp["menu"].([]any)
+	for _, raw := range menu {
+		it, _ := raw.(map[string]any)
+		if it["title"] == "Капучино" {
+			if list, _ := it["addons"].([]any); len(list) != 0 {
+				t.Fatalf("скрытая добавка видна гостю: %v", resp)
+			}
+		}
 	}
 }

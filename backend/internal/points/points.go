@@ -137,12 +137,13 @@ type Load struct {
 
 // Point — точка выдачи для клиента.
 type Point struct {
-	ID       string          `json:"id"`
-	Title    string          `json:"title"`
-	Address  string          `json:"address"`
-	Geo      json.RawMessage `json:"geo"`
-	Timezone string          `json:"timezone"`
-	Load     Load            `json:"load"`
+	ID        string          `json:"id"`
+	Title     string          `json:"title"`
+	BrandName string          `json:"brand_name"`
+	Address   string          `json:"address"`
+	Geo       json.RawMessage `json:"geo"`
+	Timezone  string          `json:"timezone"`
+	Load      Load            `json:"load"`
 }
 
 // Addon — добавка к напитку (сироп, молоко, доп. шот).
@@ -153,12 +154,13 @@ type Addon struct {
 	PrepSeconds int    `json:"prep_seconds"`
 }
 
-// MenuItem — позиция меню точки.
+// MenuItem — позиция меню точки. Addons — добавки именно этого напитка.
 type MenuItem struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	PriceMinor  int64  `json:"price_minor"`
-	PrepSeconds int    `json:"prep_seconds"`
+	ID          string  `json:"id"`
+	Title       string  `json:"title"`
+	PriceMinor  int64   `json:"price_minor"`
+	PrepSeconds int     `json:"prep_seconds"`
+	Addons      []Addon `json:"addons"`
 }
 
 // SlotPlan — назначенное точкой окно производства.
@@ -179,9 +181,11 @@ func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 // List — активные точки с текущей загрузкой (ожидание, число заказов, открыто ли).
 func (s *Store) List(ctx context.Context, now time.Time) ([]Point, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT p.id, p.title, COALESCE(p.address, ''), p.geo, p.timezone, p.capacity_config,
+		SELECT p.id, p.title, COALESCE(u.brand_name, ''), COALESCE(p.address, ''),
+		       p.geo, p.timezone, p.capacity_config,
 		       COALESCE(q.prep_seconds, 0), COALESCE(q.active_orders, 0)
 		FROM points p
+		LEFT JOIN users u ON u.id = p.owner_id
 		LEFT JOIN LATERAL (
 			SELECT COALESCE(SUM((mi.prep_seconds + COALESCE(a.prep_seconds, 0)) * oi.qty), 0)::int AS prep_seconds,
 			       COUNT(DISTINCT o.id)::int AS active_orders
@@ -205,7 +209,7 @@ func (s *Store) List(ctx context.Context, now time.Time) ([]Point, error) {
 	for rows.Next() {
 		var p Point
 		var geo, capacityRaw []byte
-		if err := rows.Scan(&p.ID, &p.Title, &p.Address, &geo, &p.Timezone, &capacityRaw,
+		if err := rows.Scan(&p.ID, &p.Title, &p.BrandName, &p.Address, &geo, &p.Timezone, &capacityRaw,
 			&p.Load.WaitSeconds, &p.Load.ActiveOrders); err != nil {
 			return nil, fmt.Errorf("points: scan: %w", err)
 		}
@@ -216,7 +220,7 @@ func (s *Store) List(ctx context.Context, now time.Time) ([]Point, error) {
 	return out, rows.Err()
 }
 
-// Menu — доступные позиции точки.
+// Menu — доступные позиции точки вместе с добавками каждого товара.
 func (s *Store) Menu(ctx context.Context, pointID string) ([]MenuItem, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, title, price_minor, prep_seconds
@@ -225,35 +229,46 @@ func (s *Store) Menu(ctx context.Context, pointID string) ([]MenuItem, error) {
 		return nil, fmt.Errorf("points: menu: %w", err)
 	}
 	defer rows.Close()
-	var out []MenuItem
+	out := []MenuItem{}
+	ids := make([]string, 0)
+	index := make(map[string]int)
 	for rows.Next() {
 		var m MenuItem
 		if err := rows.Scan(&m.ID, &m.Title, &m.PriceMinor, &m.PrepSeconds); err != nil {
 			return nil, fmt.Errorf("points: scan menu: %w", err)
 		}
+		m.Addons = []Addon{}
+		index[m.ID] = len(out)
 		out = append(out, m)
+		ids = append(ids, m.ID)
 	}
-	return out, rows.Err()
-}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
 
-// Addons — доступные добавки точки.
-func (s *Store) Addons(ctx context.Context, pointID string) ([]Addon, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, title, price_minor, prep_seconds
-		FROM addons WHERE point_id = $1 AND is_available ORDER BY title`, pointID)
+	addonRows, err := s.pool.Query(ctx, `
+		SELECT menu_item_id, id, title, price_minor, prep_seconds
+		FROM addons
+		WHERE menu_item_id = ANY($1::uuid[]) AND is_available
+		ORDER BY title`, ids)
 	if err != nil {
 		return nil, fmt.Errorf("points: addons: %w", err)
 	}
-	defer rows.Close()
-	var out []Addon
-	for rows.Next() {
+	defer addonRows.Close()
+	for addonRows.Next() {
+		var menuItemID string
 		var a Addon
-		if err := rows.Scan(&a.ID, &a.Title, &a.PriceMinor, &a.PrepSeconds); err != nil {
+		if err := addonRows.Scan(&menuItemID, &a.ID, &a.Title, &a.PriceMinor, &a.PrepSeconds); err != nil {
 			return nil, fmt.Errorf("points: scan addon: %w", err)
 		}
-		out = append(out, a)
+		if i, ok := index[menuItemID]; ok {
+			out[i].Addons = append(out[i].Addons, a)
+		}
 	}
-	return out, rows.Err()
+	return out, addonRows.Err()
 }
 
 // PlanSlot — движок ёмкости v2: назначает ближайшее окно, в котором точка

@@ -168,6 +168,55 @@ func (h *Handlers) ListPoints(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"points": points})
 }
 
+type updateProfileRequest struct {
+	BrandName *string `json:"brand_name"`
+}
+
+// GET /admin/profile — настройки владельца (название кофейни).
+func (h *Handlers) Profile(w http.ResponseWriter, r *http.Request) {
+	session, ok := auth.FromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, httpx.ErrUnauthorized)
+		return
+	}
+	profile, err := h.store.Profile(r.Context(), session.UserID)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, profile)
+}
+
+// PATCH /admin/profile — сохранить название кофейни. Точки сохраняют свои
+// названия: бренд один на кабинет, у точек — витринные имена.
+func (h *Handlers) UpdateProfile(w http.ResponseWriter, r *http.Request) {
+	session, ok := auth.FromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, httpx.ErrUnauthorized)
+		return
+	}
+	req, err := httpx.ReadJSON[updateProfileRequest](r)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	if req.BrandName == nil {
+		httpx.WriteError(w, httpx.ErrBadRequest)
+		return
+	}
+	brand := strings.TrimSpace(*req.BrandName)
+	if len([]rune(brand)) > 80 {
+		httpx.WriteError(w, httpx.ErrBadRequest)
+		return
+	}
+	profile, err := h.store.UpdateProfile(r.Context(), session.UserID, brand)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, profile)
+}
+
 type updatePointRequest struct {
 	Title              *string     `json:"title"`
 	Address            *string     `json:"address"`
@@ -258,25 +307,19 @@ func (h *Handlers) UpdatePoint(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, point)
 }
 
-// GET /admin/points/{id}/menu — меню точки (включая скрытые позиции) и добавки.
+// GET /admin/points/{id}/menu — меню точки (включая скрытые позиции и добавки).
 func (h *Handlers) ListMenu(w http.ResponseWriter, r *http.Request) {
 	session, ok := auth.FromContext(r.Context())
 	if !ok {
 		httpx.WriteError(w, httpx.ErrUnauthorized)
 		return
 	}
-	pointID := r.PathValue("id")
-	items, err := h.store.ListMenu(r.Context(), session.UserID, pointID)
+	items, err := h.store.ListMenu(r.Context(), session.UserID, r.PathValue("id"))
 	if err != nil {
 		httpx.WriteError(w, err)
 		return
 	}
-	addons, err := h.store.ListAddons(r.Context(), session.UserID, pointID)
-	if err != nil {
-		httpx.WriteError(w, err)
-		return
-	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items, "addons": addons})
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 // POST /admin/points/{id}/menu — добавить позицию в меню точки.
@@ -353,7 +396,7 @@ func (h *Handlers) UpdateMenuItem(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, item)
 }
 
-// POST /admin/points/{id}/addons — добавить добавку в каталог точки.
+// POST /admin/menu/{id}/addons — добавить добавку к конкретному товару.
 func (h *Handlers) CreateAddon(w http.ResponseWriter, r *http.Request) {
 	session, ok := auth.FromContext(r.Context())
 	if !ok {
@@ -425,6 +468,20 @@ func (h *Handlers) UpdateAddon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, addon)
+}
+
+// DELETE /admin/addons/{id} — убрать добавку из меню товара.
+func (h *Handlers) DeleteAddon(w http.ResponseWriter, r *http.Request) {
+	session, ok := auth.FromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, httpx.ErrUnauthorized)
+		return
+	}
+	if err := h.store.DeleteAddon(r.Context(), session.UserID, r.PathValue("id")); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type createBaristaRequest struct {

@@ -172,6 +172,13 @@ private fun PointCard(point: PointDto, onOpen: () -> Unit) {
     Card(Modifier.fillMaxWidth().clickable { onOpen() }) {
         Row(Modifier.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
+                if (point.brand_name.isNotBlank()) {
+                    Text(
+                        point.brand_name,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
                 Text(point.title, style = MaterialTheme.typography.titleMedium)
                 if (point.address.isNotBlank()) {
                     Text(point.address, style = MaterialTheme.typography.bodySmall)
@@ -211,7 +218,6 @@ private fun PointScreen(
     onOpenOrders: () -> Unit,
 ) {
     var menu by remember { mutableStateOf<List<MenuItemDto>>(emptyList()) }
-    var addons by remember { mutableStateOf<List<AddonDto>>(emptyList()) }
     var cart by remember { mutableStateOf<Map<String, CartLine>>(emptyMap()) }
     var addonTarget by remember { mutableStateOf<MenuItemDto?>(null) }
     var busy by remember { mutableStateOf(false) }
@@ -220,23 +226,24 @@ private fun PointScreen(
 
     LaunchedEffect(point.id) {
         api.menu(point.id).fold(
-            { menu = it.menu; addons = it.addons },
+            { menu = it.menu },
             { error = it.message },
         )
     }
 
-    fun selectedAddons(line: CartLine?): List<AddonDto> =
-        addons.filter { it.id in (line?.addonIds ?: emptySet()) }
+    // Добавки принадлежат товару: у каждого напитка свой набор.
+    fun selectedAddons(item: MenuItemDto, line: CartLine?): List<AddonDto> =
+        item.addons.filter { it.id in (line?.addonIds ?: emptySet()) }
 
     val totalMinor = menu.sumOf { item ->
         val line = cart[item.id] ?: return@sumOf 0L
-        val addonMinor = selectedAddons(line).sumOf { it.price_minor }
+        val addonMinor = selectedAddons(item, line).sumOf { it.price_minor }
         line.qty * (item.price_minor + addonMinor)
     }
     val totalItems = cart.values.sumOf { it.qty }
     val ownPrepSeconds = menu.sumOf { item ->
         val line = cart[item.id] ?: return@sumOf 0
-        val addonPrep = selectedAddons(line).sumOf { it.prep_seconds }
+        val addonPrep = selectedAddons(item, line).sumOf { it.prep_seconds }
         line.qty * (item.prep_seconds + addonPrep)
     }
 
@@ -345,7 +352,7 @@ private fun PointScreen(
                 items(menu) { item ->
                     val line = cart[item.id]
                     val qty = line?.qty ?: 0
-                    val chosen = selectedAddons(line)
+                    val chosen = selectedAddons(item, line)
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(12.dp)) {
                             Row(
@@ -382,7 +389,7 @@ private fun PointScreen(
                                         (line ?: CartLine(0)).copy(qty = qty + 1))
                                 }) { Text("+") }
                             }
-                            if (addons.isNotEmpty()) {
+                            if (item.addons.isNotEmpty()) {
                                 TextButton(onClick = { addonTarget = item }) {
                                     Text(if (chosen.isEmpty()) "Добавить добавки" else "Изменить добавки")
                                 }
@@ -401,7 +408,7 @@ private fun PointScreen(
         val current = cart[target.id] ?: CartLine(0)
         AddonPickerDialog(
             menuItemTitle = target.title,
-            addons = addons,
+            addons = target.addons,
             selected = current.addonIds,
             onDismiss = { addonTarget = null },
             onConfirm = { selected ->

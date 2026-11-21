@@ -172,7 +172,7 @@ func (s *Store) Create(ctx context.Context, pointID, clientID string, items []Cr
 			var a lineAddon
 			err := tx.QueryRow(ctx, `
 				SELECT id, title, price_minor, prep_seconds FROM addons
-				WHERE id = $1 AND point_id = $2 AND is_available`, addonID, pointID,
+				WHERE id = $1 AND menu_item_id = $2 AND is_available`, addonID, it.MenuItemID,
 			).Scan(&a.AddonID, &a.Title, &a.PriceMinor, &a.Prep)
 			if err != nil {
 				if err == pgx.ErrNoRows {
