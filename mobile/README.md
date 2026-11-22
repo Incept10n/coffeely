@@ -16,6 +16,12 @@ Kotlin Multiplatform + Compose Multiplatform. Android — первый рели�
 - Сессия сохраняется на устройстве (SharedPreferences): при следующем запуске гость
   сразу видит свои заказы, access-токен продлевается по refresh.
 - Тема coffeely (Material 3), выбор системная/светлая/тёмная — сохраняется на устройстве.
+- **Карта точек** (кнопка «Карта» в списке кофеен): Leaflet с тайлами Яндекс Карт
+  рисует публичная страница сайта `/map`, приложение грузит её в WebView, передаёт
+  точки через `window.coffeelyPoints` и получает клик по пину через JS-мост
+  `coffeelyBridge`. Клик открывает карточку с адресом владельца и кнопкой
+  «Выбрать кофейню». Ключ Tiles API живёт в бандле сайта, в APK его нет.
+  В диалоге «О программе» — обязательная ссылка на условия Яндекс Карт.
 
 ## Структура
 
@@ -27,6 +33,8 @@ composeApp/src/commonMain/
   api/TokenStore.kt          — сессия (память + хранилище платформы)
   screens/LoginScreen.kt     — вход и регистрация
   screens/ClientScreens.kt   — точки → меню/заказ → статус → «мои заказы»
+  screens/MapScreen.kt       — карта точек: загрузка, карточка, «О программе»
+  screens/MapWebView.kt      — expect-обёртка WebView (Android — androidMain)
   screens/BaristaScreen.kt   — KDS-очередь баристы
   ui/Theme.kt                — тема coffeely
   ui/YandexSignIn.kt         — кнопка «Войти с Яндексом» (expect; LoginSDK в androidMain)
@@ -105,6 +113,20 @@ coffeely.keyPassword=…
 
 CI (`.github/workflows/ci.yml`, job `apk`) собирает именно прод-сборку и выкладывает её
 в S3: `https://s3.inceptech.ru/coffeely/coffeely.apk` (эту ссылку отдаёт лендинг).
+
+### Адрес страницы карты
+
+Карта — это страница сайта `/map`, которую приложение открывает в WebView. Адрес
+зашивается в `BuildConfig.WEB_BASE_URL` (Gradle property `coffeely.webBaseUrl`),
+по умолчанию `https://coffeely.inceptech.ru`:
+
+```sh
+# локальная проверка карты против dev-лендинга (vite или nginx на :5173)
+./gradlew :composeApp:assembleDebug -Pcoffeely.webBaseUrl=http://10.0.2.2:5173
+```
+
+В WebView разрешена навигация только внутри своего origin; всё остальное
+(«Открыть в Картах» и прочие ссылки) уходит в системный браузер.
 
 ### Вход через Яндекс ID
 
