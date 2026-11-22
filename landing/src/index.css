@@ -1420,6 +1420,64 @@ p {
   min-height: 0;
 }
 
+/* «Где я» — поверх карты, но ниже системных диалогов разрешений.
+   Top-right: не спорит с зумом Leaflet (слева) и атрибуцией (слева снизу). */
+.map-locate {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 1000;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 38px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--espresso);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(47, 33, 26, 0.18);
+  cursor: pointer;
+}
+
+.map-locate:hover {
+  background: #fff;
+}
+
+.map-locate:disabled {
+  cursor: progress;
+  opacity: 0.75;
+}
+
+.map-locate--busy .map-locate__icon {
+  animation: map-locate-spin 1.1s linear infinite;
+}
+
+@keyframes map-locate-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Сообщение об ошибке геолокации: не модальное, исчезает при следующем клике. */
+.map-hint {
+  position: absolute;
+  top: 58px;
+  right: 12px;
+  z-index: 1000;
+  max-width: 240px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(47, 33, 26, 0.92);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.4;
+  box-shadow: 0 2px 8px rgba(47, 33, 26, 0.25);
+}
+
 .map-overlay {
   position: absolute;
   inset: 0;

@@ -12,26 +12,41 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -42,7 +57,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.coffeely.mobile.api.AddonDto
 import com.coffeely.mobile.api.ApiClient
@@ -54,20 +71,20 @@ import com.coffeely.mobile.api.hhmm
 import com.coffeely.mobile.api.isActive
 import com.coffeely.mobile.api.statusRu
 import com.coffeely.mobile.api.waitMinutes
-import com.coffeely.mobile.ui.ThemeModeButton
+import com.coffeely.mobile.ui.ThemeDialog
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 // Строка корзины: количество и выбранные добавки (id из каталога точки).
 private data class CartLine(val qty: Int, val addonIds: Set<String> = emptySet())
 
-// Клиентский флоу v2: точки (с ожиданием) → меню → заказ (окно назначает точка)
-// → статус заказа в реальном времени. «Мои заказы» — отдельным экраном.
+// Клиентский флоу v2: главный экран (карта / список точек) → меню → заказ
+// (окно назначает точка) → статус заказа в реальном времени. «Мои заказы»
+// открываются из бургер-меню главного экрана.
 @Composable
 fun ClientFlow(api: ApiClient, onLogout: () -> Unit) {
     var point by remember { mutableStateOf<PointDto?>(null) }
     var showOrders by remember { mutableStateOf(false) }
-    var showMap by remember { mutableStateOf(false) }
     var placed by remember { mutableStateOf<OrderDto?>(null) }
 
     when {
@@ -99,24 +116,18 @@ fun ClientFlow(api: ApiClient, onLogout: () -> Unit) {
             onOpenOrders = { showOrders = true; point = null },
         )
 
-        showMap -> MapScreen(
-            api = api,
-            onBack = { showMap = false },
-            onSelect = {
-                showMap = false
-                point = it
-            },
-        )
-
         else -> PointsScreen(
             api = api,
             onOpen = { point = it },
             onOpenOrders = { showOrders = true },
-            onOpenMap = { showMap = true },
             onLogout = onLogout,
         )
     }
 }
+
+// Два режима главного экрана. Всё остальное (заказы, тема, «о программе»,
+// выход) убрано в бургер-меню: в шапке остаются только эти две области.
+private enum class HomeTab { MAP, LIST }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -124,12 +135,16 @@ private fun PointsScreen(
     api: ApiClient,
     onOpen: (PointDto) -> Unit,
     onOpenOrders: () -> Unit,
-    onOpenMap: () -> Unit,
     onLogout: () -> Unit,
 ) {
     var points by remember { mutableStateOf<List<PointDto>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
+    var tab by remember { mutableStateOf(HomeTab.LIST) }
+    var showAbout by remember { mutableStateOf(false) }
+    var showTheme by remember { mutableStateOf(false) }
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
 
     // Загрузка точек обновляется, пока экран открыт: ожидание меняется на глазах.
     LaunchedEffect(Unit) {
@@ -143,38 +158,220 @@ private fun PointsScreen(
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("coffeely") },
-                actions = {
-                    ThemeModeButton()
-                    TextButton(onClick = onOpenMap) { Text("Карта") }
-                    TextButton(onClick = onOpenOrders) { Text("Мои заказы") }
-                    TextButton(onClick = onLogout) { Text("Выйти") }
-                },
-            )
+    // Закрываем меню и сразу выполняем действие: после навигации этот экран
+    // может исчезнуть, и анимация закрытия уже не нужна.
+    fun closeDrawer(action: () -> Unit) {
+        scope.launch { drawerState.close() }
+        action()
+    }
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        // Карта занимает весь экран и тянется пальцем; свайп от левого края
+        // открывал бы меню вместо прокрутки карты. Открываем только бургером.
+        gesturesEnabled = false,
+        drawerContent = {
+            ModalDrawerSheet {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.primaryContainer)
+                        .padding(horizontal = 24.dp, vertical = 28.dp),
+                ) {
+                    Text(
+                        "coffeely",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                    Text(
+                        "предзаказ кофе к точному времени",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                DrawerItem("Мои заказы", Icons.Filled.ShoppingCart) {
+                    closeDrawer(onOpenOrders)
+                }
+                DrawerItem("О программе", Icons.Filled.Info) {
+                    closeDrawer { showAbout = true }
+                }
+                DrawerItem("Тема оформления", Icons.Filled.Settings) {
+                    closeDrawer { showTheme = true }
+                }
+                HorizontalDivider(
+                    Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                )
+                DrawerItem(
+                    label = "Выйти",
+                    icon = Icons.AutoMirrored.Filled.ExitToApp,
+                    tint = MaterialTheme.colorScheme.error,
+                ) {
+                    closeDrawer(onLogout)
+                }
+            }
         },
-    ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp)) {
+    ) {
+        Scaffold(
+            topBar = {
+                Column {
+                    TopAppBar(
+                        title = {
+                            Text("coffeely", fontWeight = FontWeight.Bold)
+                        },
+                        navigationIcon = {
+                            IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                                Icon(Icons.Filled.Menu, contentDescription = "Меню")
+                            }
+                        },
+                    )
+                    HomeTabSwitch(selected = tab, onSelect = { tab = it })
+                    error?.let {
+                        Text(
+                            it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                        )
+                    }
+                }
+            },
+        ) { padding ->
+            Box(Modifier.fillMaxSize().padding(padding)) {
+                when (tab) {
+                    HomeTab.MAP -> PointsMapTab(
+                        points = points,
+                        onOpenPoint = onOpen,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+
+                    HomeTab.LIST -> PointsList(
+                        points = points,
+                        onOpen = onOpen,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+                if (loading && points.isEmpty()) {
+                    CircularProgressIndicator(Modifier.align(Alignment.Center))
+                }
+            }
+        }
+    }
+
+    ThemeDialog(open = showTheme, onDismiss = { showTheme = false })
+    if (showAbout) MapAboutDialog(onClose = { showAbout = false })
+}
+
+// Две выделяющиеся области в шапке: карта и список. Раньше это были
+// текстовые кнопки в actions, вместе с темой, заказами и выходом.
+@Composable
+private fun HomeTabSwitch(selected: HomeTab, onSelect: (HomeTab) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .padding(bottom = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        HomeTabButton(
+            label = "Точка на карте",
+            icon = Icons.Filled.Place,
+            selected = selected == HomeTab.MAP,
+            modifier = Modifier.weight(1f),
+        ) { onSelect(HomeTab.MAP) }
+        HomeTabButton(
+            label = "Список точек",
+            icon = Icons.AutoMirrored.Filled.List,
+            selected = selected == HomeTab.LIST,
+            modifier = Modifier.weight(1f),
+        ) { onSelect(HomeTab.LIST) }
+    }
+}
+
+@Composable
+private fun HomeTabButton(
+    label: String,
+    icon: ImageVector,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val container = if (selected) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.surfaceContainerHighest
+    }
+    val content = if (selected) {
+        MaterialTheme.colorScheme.onPrimary
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    Surface(
+        modifier = modifier
+            .height(46.dp)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(14.dp),
+        color = container,
+        contentColor = content,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxSize(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(label, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+        }
+    }
+}
+
+@Composable
+private fun DrawerItem(
+    label: String,
+    icon: ImageVector,
+    tint: Color = MaterialTheme.colorScheme.onSurface,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 24.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(16.dp))
+        Text(label, style = MaterialTheme.typography.bodyLarge, color = tint)
+    }
+}
+
+@Composable
+private fun PointsList(
+    points: List<PointDto>,
+    onOpen: (PointDto) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier.padding(horizontal = 16.dp)) {
+        Text(
+            "Выберите кофейню — покажем, когда будет готов ваш кофе",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(vertical = 8.dp),
+        )
+        if (points.isEmpty()) {
             Text(
-                "Выберите кофейню — покажем, когда будет готов ваш кофе",
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(vertical = 8.dp),
+                "Рядом пока нет точек на карте — загляните во вкладку «Точка на карте».",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            error?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
-            if (loading) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
-                }
-                return@Column
-            }
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(points) { p ->
-                    PointCard(p, onOpen = { onOpen(p) })
-                }
+            return@Column
+        }
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(points) { p ->
+                PointCard(p, onOpen = { onOpen(p) })
             }
         }
     }
@@ -185,15 +382,9 @@ private fun PointCard(point: PointDto, onOpen: () -> Unit) {
     Card(Modifier.fillMaxWidth().clickable { onOpen() }) {
         Row(Modifier.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                if (point.brand_name.isNotBlank()) {
-                    Text(
-                        point.brand_name,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                }
-                Text(point.title, style = MaterialTheme.typography.titleMedium)
+                PointTitle(point)
                 if (point.address.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
                     Text(point.address, style = MaterialTheme.typography.bodySmall)
                 }
                 Spacer(Modifier.height(4.dp))
@@ -263,7 +454,24 @@ private fun PointScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(point.title) },
+                title = {
+                    Column {
+                        if (point.brand_name.isNotBlank()) {
+                            Text(
+                                point.brand_name.trim(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Text(
+                            point.title,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "назад")

@@ -80,6 +80,11 @@ export default function PointsMap({
 
   const [retry, setRetry] = useState(0);
   const [tileError, setTileError] = useState(false);
+  const [locating, setLocating] = useState(false);
+  const [locateError, setLocateError] = useState<string | null>(null);
+  // Слой «вы здесь»: точка и круг точности живут отдельно от пинов кофеен,
+  // чтобы обновление списка точек не стирало геолокацию.
+  const hereRef = useRef<L.LayerGroup | null>(null);
   const key = import.meta.env.VITE_YANDEX_TILES_KEY ?? "";
 
   // Инициализация карты — один раз.
@@ -136,6 +141,7 @@ export default function PointsMap({
     attribution.addTo(map);
 
     markersRef.current = L.layerGroup().addTo(map);
+    hereRef.current = L.layerGroup().addTo(map);
 
     // WebView иногда отдаёт контейнеру нулевой размер на первом кадре:
     // без invalidateSize карта остаётся пустой.
@@ -150,6 +156,7 @@ export default function PointsMap({
       map.remove();
       mapRef.current = null;
       markersRef.current = null;
+      hereRef.current = null;
       tilesRef.current = null;
       pickerRef.current = null;
       fittedRef.current = "";
@@ -282,9 +289,90 @@ export default function PointsMap({
     }
   }, [value, mode]);
 
+  // «Где я»: спрашиваем геолокацию браузера/WebView, рисуем точку и круг
+  // точности и подводим карту к этому месту. В приложении WebView сам
+  // спрашивает разрешение Android (см. MapWebView.android.kt).
+  function showMyLocation() {
+    const map = mapRef.current;
+    if (!map) return;
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setLocateError("Геолокация на этом устройстве недоступна");
+      return;
+    }
+    setLocateError(null);
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLocating(false);
+        const group = hereRef.current;
+        if (!group) return;
+        const { latitude, longitude, accuracy } = pos.coords;
+        // Минимум 40 м: на точных GPS-данных круг в 5 м визуально исчезает.
+        const radius = Math.max(accuracy || 0, 40);
+        group.clearLayers();
+        const area = L.circle([latitude, longitude], {
+          radius,
+          color: "#2f6fed",
+          weight: 1,
+          fillColor: "#2f6fed",
+          fillOpacity: 0.14,
+          className: "map-here-area",
+        }).addTo(group);
+        L.circleMarker([latitude, longitude], {
+          radius: 7,
+          color: "#ffffff",
+          weight: 3,
+          fillColor: "#2f6fed",
+          fillOpacity: 1,
+          className: "map-here-dot",
+        }).addTo(group);
+        map.fitBounds(area.getBounds(), { padding: [36, 36], maxZoom: 17 });
+      },
+      (err) => {
+        setLocating(false);
+        setLocateError(
+          err.code === err.PERMISSION_DENIED
+            ? "Нет доступа к геолокации — разрешите его в настройках"
+            : "Не удалось определить местоположение",
+        );
+      },
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 },
+    );
+  }
+
   return (
     <div className={`map-wrap${className ? ` ${className}` : ""}`} style={{ height }}>
       <div ref={containerRef} className="map-canvas" />
+      {mode === "view" && (
+        <>
+          <button
+            type="button"
+            className={`map-locate${locating ? " map-locate--busy" : ""}`}
+            onClick={showMyLocation}
+            disabled={locating}
+            aria-label="Показать моё местоположение"
+          >
+            <svg
+              className="map-locate__icon"
+              viewBox="0 0 24 24"
+              width="16"
+              height="16"
+              aria-hidden="true"
+            >
+              <path
+                fill="currentColor"
+                d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm9 3h-2.07A7.01 7.01 0 0 0 13 5.07V3h-2v2.07A7.01 7.01 0 0 0 5.07 11H3v2h2.07A7.01 7.01 0 0 0 11 18.93V21h2v-2.07A7.01 7.01 0 0 0 18.93 13H21v-2Zm-9 5a5 5 0 1 1 0-10 5 5 0 0 1 0 10Z"
+              />
+            </svg>
+            {locating ? "Ищем…" : "Где я"}
+          </button>
+          {locateError && (
+            <div className="map-hint" role="status">
+              {locateError}
+            </div>
+          )}
+        </>
+      )}
       {tileError && (
         <div className="map-overlay" role="status">
           <p>{key ? "Карта не загрузилась" : "Не задан ключ Яндекс Карт"}</p>

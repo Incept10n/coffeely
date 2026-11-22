@@ -31,10 +31,17 @@ fun ThemeModeButton(modifier: Modifier = Modifier, label: String = "Тема") {
         Text(label)
     }
 
+    ThemeDialog(open = open, onDismiss = { open = false })
+}
+
+// Диалог выбора темы. Публичный: бургер-меню на главном экране держит его
+// открытие в своём состоянии и показывает тем же composable.
+@Composable
+fun ThemeDialog(open: Boolean, onDismiss: () -> Unit) {
     if (!open) return
 
     AlertDialog(
-        onDismissRequest = { open = false },
+        onDismissRequest = onDismiss,
         title = { Text("Тема оформления") },
         text = {
             Column(Modifier.fillMaxWidth()) {
@@ -42,21 +49,21 @@ fun ThemeModeButton(modifier: Modifier = Modifier, label: String = "Тема") {
                     title = "Как в системе",
                     subtitle = "Светлая или тёмная — по настройке телефона",
                     selected = ThemePreference.mode == ThemeMode.SYSTEM,
-                ) { ThemePreference.select(ThemeMode.SYSTEM); open = false }
+                ) { ThemePreference.select(ThemeMode.SYSTEM); onDismiss() }
                 ThemeOption(
                     title = "Светлая",
                     subtitle = "Кремовый фон, кофейный текст",
                     selected = ThemePreference.mode == ThemeMode.LIGHT,
-                ) { ThemePreference.select(ThemeMode.LIGHT); open = false }
+                ) { ThemePreference.select(ThemeMode.LIGHT); onDismiss() }
                 ThemeOption(
                     title = "Тёмная",
                     subtitle = "Тёмный кофе, приглушённые панели",
                     selected = ThemePreference.mode == ThemeMode.DARK,
-                ) { ThemePreference.select(ThemeMode.DARK); open = false }
+                ) { ThemePreference.select(ThemeMode.DARK); onDismiss() }
             }
         },
         confirmButton = {
-            TextButton(onClick = { open = false }) { Text("Закрыть") }
+            TextButton(onClick = onDismiss) { Text("Закрыть") }
         },
     )
 }
