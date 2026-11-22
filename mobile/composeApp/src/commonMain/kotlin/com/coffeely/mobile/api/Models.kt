@@ -53,6 +53,10 @@ data class PointDto(
     val title: String,
     val brand_name: String = "",
     val address: String = "",
+    // Координаты для карты. null — точка ещё не размечена владельцем:
+    // в списке она есть, на карте её нет.
+    val lat: Double? = null,
+    val lng: Double? = null,
     val timezone: String = "",
     val load: PointLoadDto = PointLoadDto(),
 )

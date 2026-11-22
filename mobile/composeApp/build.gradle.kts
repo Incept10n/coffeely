@@ -91,6 +91,14 @@ android {
             .get()
         buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
 
+        // Адрес сайта с публичной страницей карты (/map). В WebView грузим
+        // именно её: ключ Tiles API остаётся на сайте, а не в APK.
+        // Для локальной разработки: -Pcoffeely.webBaseUrl=http://10.0.2.2:5173
+        val webBaseUrl = providers.gradleProperty("coffeely.webBaseUrl")
+            .orElse("https://coffeely.inceptech.ru")
+            .get()
+        buildConfigField("String", "WEB_BASE_URL", "\"$webBaseUrl\"")
+
         // ClientID приложения Яндекс OAuth. Не секрет: он попадает в манифест
         // (LoginSDK берёт его оттуда) и в APK. Пусто — кнопка входа через Яндекс
         // не показывается, остальной вход работает как раньше.

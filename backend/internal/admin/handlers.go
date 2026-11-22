@@ -80,9 +80,23 @@ func hmToMinutes(hm string) int {
 	return h*60 + m
 }
 
+// validCoords: координаты либо обе пустые (точка без карты), либо обе заданы
+// и в допустимых диапазонах. Одну половину пары принимать нельзя.
+func validCoords(lat, lng *float64) bool {
+	if lat == nil && lng == nil {
+		return true
+	}
+	if lat == nil || lng == nil {
+		return false
+	}
+	return *lat >= -90 && *lat <= 90 && *lng >= -180 && *lng <= 180
+}
+
 type createPointRequest struct {
 	Title            string        `json:"title"`
 	Address          string        `json:"address"`
+	Lat              *float64      `json:"lat"`
+	Lng              *float64      `json:"lng"`
 	WindowMinutes    int           `json:"window_minutes"`
 	MaxPerWindow     int           `json:"max_orders_per_window"`
 	WorkStart        string        `json:"work_start"` // HH:MM
@@ -124,6 +138,10 @@ func (h *Handlers) CreatePoint(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, ErrBadCapacity)
 		return
 	}
+	if !validCoords(req.Lat, req.Lng) {
+		httpx.WriteError(w, ErrBadCoords)
+		return
+	}
 	cap, err := json.Marshal(map[string]any{
 		"window_minutes":        req.WindowMinutes,
 		"max_orders_per_window": req.MaxPerWindow,
@@ -145,7 +163,7 @@ func (h *Handlers) CreatePoint(w http.ResponseWriter, r *http.Request) {
 		menu = append(menu, MenuItem{Title: strings.TrimSpace(mi.Title), PriceMinor: mi.PriceMinor, PrepSeconds: mi.PrepSeconds})
 	}
 
-	point, err := h.store.CreatePoint(r.Context(), session.UserID, req.Title, req.Address, cap, menu)
+	point, err := h.store.CreatePoint(r.Context(), session.UserID, req.Title, req.Address, req.Lat, req.Lng, cap, menu)
 	if err != nil {
 		httpx.WriteError(w, err)
 		return
@@ -220,6 +238,8 @@ func (h *Handlers) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 type updatePointRequest struct {
 	Title              *string     `json:"title"`
 	Address            *string     `json:"address"`
+	Lat                *float64    `json:"lat"`
+	Lng                *float64    `json:"lng"`
 	IsActive           *bool       `json:"is_active"`
 	WindowMinutes      *int        `json:"window_minutes"`
 	MaxOrdersPerWindow *int        `json:"max_orders_per_window"`
@@ -241,10 +261,18 @@ func (h *Handlers) UpdatePoint(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, err)
 		return
 	}
+	if !validCoords(req.Lat, req.Lng) {
+		httpx.WriteError(w, ErrBadCoords)
+		return
+	}
 	patch := PointPatch{
 		IsActive:           req.IsActive,
 		WindowMinutes:      req.WindowMinutes,
 		MaxOrdersPerWindow: req.MaxOrdersPerWindow,
+	}
+	if req.Lat != nil && req.Lng != nil {
+		patch.Lat = req.Lat
+		patch.Lng = req.Lng
 	}
 	if req.Title != nil {
 		title := strings.TrimSpace(*req.Title)

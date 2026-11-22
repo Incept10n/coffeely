@@ -1388,3 +1388,105 @@ p {
 .muted {
   color: var(--muted);
 }
+
+/* ------------------------------- Карта ---------------------------------- */
+
+.map-wrap {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--cream-2);
+}
+
+.map-canvas {
+  width: 100%;
+  height: 100%;
+  min-height: 280px;
+}
+
+/* В WebView высота 100vh на первом кадре может посчитаться нулевой;
+   fixed + inset: 0 привязывает карту к реальному viewport. */
+.map-page {
+  position: fixed;
+  inset: 0;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+}
+
+.map-page .map-canvas {
+  min-height: 0;
+}
+
+.map-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  text-align: center;
+  background: rgba(247, 242, 234, 0.88);
+}
+
+.map-overlay p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.map-pin {
+  display: block;
+  width: 20px;
+  height: 20px;
+  margin: 3px;
+  border: 3px solid #fff;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 2px 8px rgba(47, 33, 26, 0.35);
+}
+
+.map-pin--selected {
+  background: var(--espresso);
+  transform: scale(1.2);
+  box-shadow:
+    0 0 0 6px rgba(139, 94, 60, 0.25),
+    0 2px 8px rgba(47, 33, 26, 0.35);
+}
+
+.map-attrib {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.map-attrib__logo img {
+  display: block;
+  width: 66px;
+  height: 36px;
+}
+
+.map-attrib__open {
+  color: #333;
+  font-size: 11px;
+  text-decoration: underline;
+}
+
+.leaflet-container {
+  font: inherit;
+}
+
+.owner__map-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 16px 0;
+}

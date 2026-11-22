@@ -159,7 +159,9 @@ func TestMigration009KeepsAddonsWithExistingData(t *testing.T) {
 	if err := db.QueryRowContext(ctx, "SELECT version, dirty FROM schema_migrations").Scan(&version, &dirty); err != nil {
 		t.Fatalf("schema_migrations: %v", err)
 	}
-	if version != 9 || dirty {
-		t.Fatalf("schema_migrations: version=%d dirty=%v, хотим 9/false", version, dirty)
+	// Проверяем, что дошли как минимум до 000009 и не оставили грязную версию:
+	// точное число меняется с каждой новой миграцией.
+	if version < 9 || dirty {
+		t.Fatalf("schema_migrations: version=%d dirty=%v, хотим >=9 и dirty=false", version, dirty)
 	}
 }

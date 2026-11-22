@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import AdminPanel from "./Admin";
+import PointsMap from "./Map";
+import type { MapPoint } from "./Map";
 
 // APK публикуется CI-пайплайном в S3 (seaweedfs, https://s3.inceptech.ru).
 // Объект перезаписывается каждой сборкой из main, поэтому ссылка стабильная.
@@ -65,7 +67,53 @@ export default function App() {
   if (path.startsWith("/admin")) return <AdminPanel />;
   if (path.startsWith("/owner/register")) return <OwnerRegister />;
   if (path.startsWith("/owner")) return <OwnerCabinet />;
+  if (path.startsWith("/map")) return <MapPage />;
   return <Landing />;
+}
+
+// Публичная страница карты для WebView в приложении. Точки приходят из
+// нативного кода через window.coffeelySetPoints, клик по пину уходит обратно
+// в window.coffeelyBridge.onPointClick(id). Своей авторизации у страницы нет:
+// список уже загружен приложением.
+function MapPage() {
+  // Нативный WebView может успеть отдать точки до монтирования React —
+  // поэтому читаем их и из window.coffeelyPoints, а не только через callback.
+  const [points, setPoints] = useState<MapPoint[]>(() => {
+    const w = window as unknown as { coffeelyPoints?: MapPoint[] };
+    return Array.isArray(w.coffeelyPoints) ? w.coffeelyPoints : [];
+  });
+  const [selected, setSelected] = useState<string | null>(null);
+
+  useEffect(() => {
+    const w = window as unknown as {
+      coffeelyPoints?: MapPoint[];
+      coffeelySetPoints?: (raw: MapPoint[]) => void;
+    };
+    w.coffeelySetPoints = (raw) => setPoints(Array.isArray(raw) ? raw : []);
+    if (Array.isArray(w.coffeelyPoints)) setPoints(w.coffeelyPoints);
+    return () => {
+      delete w.coffeelySetPoints;
+    };
+  }, []);
+
+  function onSelect(id: string) {
+    setSelected(id);
+    const w = window as unknown as {
+      coffeelyBridge?: { onPointClick?: (id: string) => void };
+    };
+    w.coffeelyBridge?.onPointClick?.(id);
+  }
+
+  return (
+    <PointsMap
+      points={points}
+      mode="view"
+      selectedId={selected}
+      onSelect={onSelect}
+      height="100%"
+      className="map-page"
+    />
+  );
 }
 
 /* ------------------------------- Витрина -------------------------------- */
@@ -356,6 +404,8 @@ type Point = {
   id: string;
   title: string;
   address: string;
+  lat?: number;
+  lng?: number;
   capacity_config: {
     window_minutes?: number;
     max_orders_per_window?: number;
@@ -693,6 +743,8 @@ type MenuDraftRow = {
 type PointForm = {
   title: string;
   address: string;
+  lat: number | null;
+  lng: number | null;
   workStart: string;
   workEnd: string;
   acceptEta: string;
@@ -717,6 +769,8 @@ function AddPointForm({
   const [form, setForm] = useState<PointForm>({
     title: "",
     address: "",
+    lat: null,
+    lng: null,
     workStart: "08:00",
     workEnd: "20:00",
     acceptEta: "5",
@@ -725,7 +779,8 @@ function AddPointForm({
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const set = (k: keyof PointForm) => (e: { target: { value: string } }) =>
+  type TextKey = Exclude<keyof PointForm, "lat" | "lng" | "breaks" | "menu">;
+  const set = (k: TextKey) => (e: { target: { value: string } }) =>
     setForm((f) => ({ ...f, [k]: e.target.value }));
 
   function updateRow(key: string, patch: Partial<MenuDraftRow>) {
@@ -764,6 +819,9 @@ function AddPointForm({
         body: {
           title: form.title.trim(),
           address: form.address.trim(),
+          ...(form.lat != null && form.lng != null
+            ? { lat: form.lat, lng: form.lng }
+            : {}),
           work_start: form.workStart,
           work_end: form.workEnd,
           accept_eta_minutes: Number(form.acceptEta),
@@ -775,6 +833,8 @@ function AddPointForm({
         ...f,
         title: "",
         address: "",
+        lat: null,
+        lng: null,
         menu: [emptyMenuRow()],
       }));
       setOpen(false);
@@ -845,6 +905,25 @@ function AddPointForm({
               onChange={set("acceptEta")}
             />
           </label>
+        </div>
+
+        <div className="owner__map-picker">
+          <p className="owner__menu-editor-title">Где точка на карте</p>
+          <p className="owner__hint owner__hint--tight">
+            Найдите адрес на карте и поставьте пин. Без координат точка не появится
+            на карте у гостей, но останется в списке.
+          </p>
+          <PointsMap
+            mode="picker"
+            value={form.lat != null && form.lng != null ? { lat: form.lat, lng: form.lng } : null}
+            onChange={(lat, lng) => setForm((f) => ({ ...f, lat, lng }))}
+            height={320}
+          />
+          <p className="owner__hint owner__hint--tight">
+            {form.lat != null && form.lng != null
+              ? `Координаты: ${form.lat.toFixed(6)}, ${form.lng.toFixed(6)}`
+              : "Пин не поставлен — точку не будет видно на карте."}
+          </p>
         </div>
 
         <BreaksEditor
@@ -1001,6 +1080,9 @@ function PointRow({
         <div>
           <strong>{point.title}</strong>
           {point.address ? <span className="badge"> · {point.address}</span> : null}
+          {point.lat == null || point.lng == null ? (
+            <span className="badge"> · не на карте</span>
+          ) : null}
           {!point.is_active ? <span className="badge"> · выключена</span> : null}
         </div>
         <div className="owner__row owner__row--tight">
@@ -1051,6 +1133,8 @@ function EditPointForm({ point, onSaved }: { point: Point; onSaved: () => void |
   const [form, setForm] = useState({
     title: point.title,
     address: point.address,
+    lat: point.lat ?? null,
+    lng: point.lng ?? null,
     workStart: cap.work_start,
     workEnd: cap.work_end,
     acceptEta: String(cap.accept_eta_minutes ?? 5),
@@ -1059,7 +1143,8 @@ function EditPointForm({ point, onSaved }: { point: Point; onSaved: () => void |
   const [breaks, setBreaks] = useState<Break[]>(cap.breaks ?? []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const set = (k: keyof typeof form) => (e: { target: { value: string } }) =>
+  type TextKey = "title" | "address" | "workStart" | "workEnd" | "acceptEta";
+  const set = (k: TextKey) => (e: { target: { value: string } }) =>
     setForm((f) => ({ ...f, [k]: e.target.value }));
 
   async function submit(e: FormEvent) {
@@ -1073,6 +1158,9 @@ function EditPointForm({ point, onSaved }: { point: Point; onSaved: () => void |
         body: {
           title: form.title.trim(),
           address: form.address.trim(),
+          ...(form.lat != null && form.lng != null
+            ? { lat: form.lat, lng: form.lng }
+            : {}),
           work_start: form.workStart,
           work_end: form.workEnd,
           accept_eta_minutes: Number(form.acceptEta),
@@ -1118,6 +1206,25 @@ function EditPointForm({ point, onSaved }: { point: Point; onSaved: () => void |
             onChange={set("acceptEta")}
           />
         </label>
+      </div>
+
+      <div className="owner__map-picker">
+        <p className="owner__menu-editor-title">Где точка на карте</p>
+        <p className="owner__hint owner__hint--tight">
+          Найдите адрес на карте и поставьте пин. Без координат точка не появится
+          на карте у гостей, но останется в списке.
+        </p>
+        <PointsMap
+          mode="picker"
+          value={form.lat != null && form.lng != null ? { lat: form.lat, lng: form.lng } : null}
+          onChange={(lat, lng) => setForm((f) => ({ ...f, lat, lng }))}
+          height={320}
+        />
+        <p className="owner__hint owner__hint--tight">
+          {form.lat != null && form.lng != null
+            ? `Координаты: ${form.lat.toFixed(6)}, ${form.lng.toFixed(6)}`
+            : "Пин не поставлен — точку не будет видно на карте."}
+        </p>
       </div>
 
       <BreaksEditor breaks={breaks} onChange={setBreaks} />

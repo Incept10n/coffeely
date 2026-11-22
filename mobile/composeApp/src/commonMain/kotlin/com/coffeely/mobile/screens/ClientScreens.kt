@@ -67,6 +67,7 @@ private data class CartLine(val qty: Int, val addonIds: Set<String> = emptySet()
 fun ClientFlow(api: ApiClient, onLogout: () -> Unit) {
     var point by remember { mutableStateOf<PointDto?>(null) }
     var showOrders by remember { mutableStateOf(false) }
+    var showMap by remember { mutableStateOf(false) }
     var placed by remember { mutableStateOf<OrderDto?>(null) }
 
     when {
@@ -98,10 +99,20 @@ fun ClientFlow(api: ApiClient, onLogout: () -> Unit) {
             onOpenOrders = { showOrders = true; point = null },
         )
 
+        showMap -> MapScreen(
+            api = api,
+            onBack = { showMap = false },
+            onSelect = {
+                showMap = false
+                point = it
+            },
+        )
+
         else -> PointsScreen(
             api = api,
             onOpen = { point = it },
             onOpenOrders = { showOrders = true },
+            onOpenMap = { showMap = true },
             onLogout = onLogout,
         )
     }
@@ -113,6 +124,7 @@ private fun PointsScreen(
     api: ApiClient,
     onOpen: (PointDto) -> Unit,
     onOpenOrders: () -> Unit,
+    onOpenMap: () -> Unit,
     onLogout: () -> Unit,
 ) {
     var points by remember { mutableStateOf<List<PointDto>>(emptyList()) }
@@ -137,6 +149,7 @@ private fun PointsScreen(
                 title = { Text("coffeely") },
                 actions = {
                     ThemeModeButton()
+                    TextButton(onClick = onOpenMap) { Text("Карта") }
                     TextButton(onClick = onOpenOrders) { Text("Мои заказы") }
                     TextButton(onClick = onLogout) { Text("Выйти") }
                 },

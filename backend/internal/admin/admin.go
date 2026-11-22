@@ -20,6 +20,7 @@ var (
 	ErrForeignPoint    = httpx.NewError(403, "point_foreign", "точка принадлежит другому владельцу")
 	ErrPointNotFound   = httpx.NewError(404, "point_not_found", "точка не найдена")
 	ErrBadCapacity     = httpx.NewError(400, "bad_capacity", "некорректные настройки ёмкости")
+	ErrBadCoords       = httpx.NewError(400, "bad_coords", "некорректные координаты точки")
 	ErrEmailTaken      = httpx.NewError(409, "email_taken", "email занят")
 	ErrBaristaNotFound = httpx.NewError(404, "barista_not_found", "бариста не найден")
 	ErrMenuItemMissing = httpx.NewError(404, "menu_item_not_found", "позиция меню не найдена")
@@ -31,6 +32,8 @@ type Point struct {
 	ID       string          `json:"id"`
 	Title    string          `json:"title"`
 	Address  string          `json:"address"`
+	Lat      *float64        `json:"lat,omitempty"`
+	Lng      *float64        `json:"lng,omitempty"`
 	Capacity json.RawMessage `json:"capacity_config"`
 	IsActive bool            `json:"is_active"`
 }
@@ -91,8 +94,9 @@ type Store struct {
 
 func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
-// CreatePoint — точка + меню одной транзакцией.
-func (s *Store) CreatePoint(ctx context.Context, ownerID, title, address string, capacity json.RawMessage, menu []MenuItem) (Point, error) {
+// CreatePoint — точка + меню одной транзакцией. lat/lng необязательны:
+// без них точка не появится на карте, но останется в списке приложения.
+func (s *Store) CreatePoint(ctx context.Context, ownerID, title, address string, lat, lng *float64, capacity json.RawMessage, menu []MenuItem) (Point, error) {
 	var p Point
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -101,11 +105,11 @@ func (s *Store) CreatePoint(ctx context.Context, ownerID, title, address string,
 	defer tx.Rollback(ctx)
 
 	err = tx.QueryRow(ctx, `
-		INSERT INTO points (title, address, capacity_config, owner_id)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, title, COALESCE(address, ''), capacity_config, is_active`,
-		title, address, capacity, ownerID,
-	).Scan(&p.ID, &p.Title, &p.Address, &p.Capacity, &p.IsActive)
+		INSERT INTO points (title, address, lat, lng, capacity_config, owner_id)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, title, COALESCE(address, ''), lat, lng, capacity_config, is_active`,
+		title, address, lat, lng, capacity, ownerID,
+	).Scan(&p.ID, &p.Title, &p.Address, &p.Lat, &p.Lng, &p.Capacity, &p.IsActive)
 	if err != nil {
 		return p, fmt.Errorf("admin: point insert: %w", err)
 	}
@@ -127,7 +131,7 @@ func (s *Store) CreatePoint(ctx context.Context, ownerID, title, address string,
 // ListPoints — точки владельца.
 func (s *Store) ListPoints(ctx context.Context, ownerID string) ([]Point, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, title, COALESCE(address, ''), capacity_config, is_active
+		SELECT id, title, COALESCE(address, ''), lat, lng, capacity_config, is_active
 		FROM points WHERE owner_id = $1
 		ORDER BY created_at`, ownerID)
 	if err != nil {
@@ -137,7 +141,7 @@ func (s *Store) ListPoints(ctx context.Context, ownerID string) ([]Point, error)
 	points := []Point{}
 	for rows.Next() {
 		var p Point
-		if err := rows.Scan(&p.ID, &p.Title, &p.Address, &p.Capacity, &p.IsActive); err != nil {
+		if err := rows.Scan(&p.ID, &p.Title, &p.Address, &p.Lat, &p.Lng, &p.Capacity, &p.IsActive); err != nil {
 			return nil, fmt.Errorf("admin: points scan: %w", err)
 		}
 		points = append(points, p)
@@ -149,6 +153,8 @@ func (s *Store) ListPoints(ctx context.Context, ownerID string) ([]Point, error)
 type PointPatch struct {
 	Title              *string
 	Address            *string
+	Lat                *float64
+	Lng                *float64
 	IsActive           *bool
 	WindowMinutes      *int
 	MaxOrdersPerWindow *int
@@ -170,10 +176,10 @@ func (s *Store) UpdatePoint(ctx context.Context, ownerID, pointID string, patch 
 
 	var capacityRaw []byte
 	err = tx.QueryRow(ctx, `
-		SELECT id, title, COALESCE(address, ''), capacity_config, is_active
+		SELECT id, title, COALESCE(address, ''), lat, lng, capacity_config, is_active
 		FROM points WHERE id = $1 AND owner_id = $2
 		FOR UPDATE`, pointID, ownerID,
-	).Scan(&p.ID, &p.Title, &p.Address, &capacityRaw, &p.IsActive)
+	).Scan(&p.ID, &p.Title, &p.Address, &p.Lat, &p.Lng, &capacityRaw, &p.IsActive)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, ErrPointNotFound
 	}
@@ -186,6 +192,10 @@ func (s *Store) UpdatePoint(ctx context.Context, ownerID, pointID string, patch 
 	}
 	if patch.Address != nil {
 		p.Address = *patch.Address
+	}
+	if patch.Lat != nil && patch.Lng != nil {
+		p.Lat = patch.Lat
+		p.Lng = patch.Lng
 	}
 	if patch.IsActive != nil {
 		p.IsActive = *patch.IsActive
@@ -221,9 +231,9 @@ func (s *Store) UpdatePoint(ctx context.Context, ownerID, pointID string, patch 
 
 	if _, err := tx.Exec(ctx, `
 		UPDATE points
-		SET title = $2, address = $3, capacity_config = $4, is_active = $5
+		SET title = $2, address = $3, lat = $4, lng = $5, capacity_config = $6, is_active = $7
 		WHERE id = $1`,
-		p.ID, p.Title, p.Address, p.Capacity, p.IsActive,
+		p.ID, p.Title, p.Address, p.Lat, p.Lng, p.Capacity, p.IsActive,
 	); err != nil {
 		return p, fmt.Errorf("admin: point update: %w", err)
 	}

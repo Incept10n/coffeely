@@ -141,6 +141,8 @@ type Point struct {
 	Title     string          `json:"title"`
 	BrandName string          `json:"brand_name"`
 	Address   string          `json:"address"`
+	Lat       *float64        `json:"lat,omitempty"`
+	Lng       *float64        `json:"lng,omitempty"`
 	Geo       json.RawMessage `json:"geo"`
 	Timezone  string          `json:"timezone"`
 	Load      Load            `json:"load"`
@@ -182,7 +184,7 @@ func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 func (s *Store) List(ctx context.Context, now time.Time) ([]Point, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT p.id, p.title, COALESCE(u.brand_name, ''), COALESCE(p.address, ''),
-		       p.geo, p.timezone, p.capacity_config,
+		       p.lat, p.lng, p.geo, p.timezone, p.capacity_config,
 		       COALESCE(q.prep_seconds, 0), COALESCE(q.active_orders, 0)
 		FROM points p
 		LEFT JOIN users u ON u.id = p.owner_id
@@ -209,7 +211,7 @@ func (s *Store) List(ctx context.Context, now time.Time) ([]Point, error) {
 	for rows.Next() {
 		var p Point
 		var geo, capacityRaw []byte
-		if err := rows.Scan(&p.ID, &p.Title, &p.BrandName, &p.Address, &geo, &p.Timezone, &capacityRaw,
+		if err := rows.Scan(&p.ID, &p.Title, &p.BrandName, &p.Address, &p.Lat, &p.Lng, &geo, &p.Timezone, &capacityRaw,
 			&p.Load.WaitSeconds, &p.Load.ActiveOrders); err != nil {
 			return nil, fmt.Errorf("points: scan: %w", err)
 		}

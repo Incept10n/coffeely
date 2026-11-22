@@ -6,6 +6,12 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
+
+# Ключ Tiles API приходит из CI/build-arg. Он публичный (попадает в бандл),
+# защита — ограничение по домену в кабинете Яндекса.
+ARG VITE_YANDEX_TILES_KEY
+ENV VITE_YANDEX_TILES_KEY=$VITE_YANDEX_TILES_KEY
+
 RUN npm run build
 
 FROM nginx:alpine
