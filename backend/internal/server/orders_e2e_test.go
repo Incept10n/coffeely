@@ -326,6 +326,77 @@ func TestKDSBoardE2E(t *testing.T) {
 	}
 }
 
+// Тест: статусы можно откатывать назад. Ошибочно выданный заказ возвращается
+// к выдаче, отменённый — в работу; события метрик не дублируются.
+func TestOrderStatusRollbackE2E(t *testing.T) {
+	e := newTestEnv(t)
+	e.srv = httptest.NewServer(e.handler)
+	t.Cleanup(e.srv.Close)
+
+	pointID, menuA, _, baristaAccess, clientAccess := seedKDS(t, e)
+	order := makeOrder(t, e, clientAccess, pointID, menuA, "")
+	orderID := order["id"].(string)
+
+	step := func(next string) {
+		t.Helper()
+		status, resp := e.doJSON(t, "POST", "/barista/orders/"+orderID+"/status", baristaAccess, map[string]string{"status": next})
+		if status != http.StatusOK {
+			t.Fatalf("переход %s: %d: %v", next, status, resp)
+		}
+		if got := resp["status"]; got != next {
+			t.Fatalf("переход %s: статус в ответе %v", next, got)
+		}
+	}
+
+	// вперёд и назад по всей цепочке, в конце — откат выдачи к «готов»
+	for _, next := range []string{"in_production", "paid", "in_production", "ready", "in_production", "ready", "given_out", "ready"} {
+		step(next)
+	}
+
+	// после отката выдачи событий given_out не осталось — метрика пустая
+	status, resp := e.doJSON(t, "GET", "/barista/metrics", baristaAccess, nil)
+	if status != http.StatusOK {
+		t.Fatalf("metrics: %d: %v", status, resp)
+	}
+	if resp["on_time"].(float64) != 0 || resp["missed"].(float64) != 0 {
+		t.Fatalf("metrics после отката: ожидали 0/0, получили %v", resp)
+	}
+
+	// и снова выдали — метрика считается один раз
+	step("given_out")
+	status, resp = e.doJSON(t, "GET", "/barista/metrics", baristaAccess, nil)
+	if status != http.StatusOK {
+		t.Fatalf("metrics: %d: %v", status, resp)
+	}
+	if resp["on_time"].(float64) != 1 || resp["missed"].(float64) != 0 {
+		t.Fatalf("metrics после повторной выдачи: ожидали 1/0, получили %v", resp)
+	}
+
+	// отмена и возврат в работу
+	other := makeOrder(t, e, clientAccess, pointID, menuA, "")
+	otherID := other["id"].(string)
+	if status, resp := e.doJSON(t, "POST", "/barista/orders/"+otherID+"/status", baristaAccess, map[string]string{"status": "cancelled"}); status != http.StatusOK {
+		t.Fatalf("paid→cancelled: %d: %v", status, resp)
+	}
+	if status, resp := e.doJSON(t, "POST", "/barista/orders/"+otherID+"/status", baristaAccess, map[string]string{"status": "paid"}); status != http.StatusOK {
+		t.Fatalf("cancelled→paid: %d: %v", status, resp)
+	}
+	status, resp = e.doJSON(t, "GET", "/barista/queue", baristaAccess, nil)
+	if status != http.StatusOK {
+		t.Fatalf("queue: %d: %v", status, resp)
+	}
+	found := false
+	for _, it := range resp["orders"].([]any) {
+		entry := it.(map[string]any)
+		if entry["id"] == otherID && entry["status"] == "paid" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("queue: возвращённый заказ не в работе: %v", resp)
+	}
+}
+
 // Тест: промах дедлайна фиксируется и попадает в метрики.
 func TestDeadlineMissE2E(t *testing.T) {
 	e := newTestEnv(t)

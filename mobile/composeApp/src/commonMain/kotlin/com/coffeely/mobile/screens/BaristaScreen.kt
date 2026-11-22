@@ -56,6 +56,7 @@ import com.coffeely.mobile.api.QueueEntryDto
 import com.coffeely.mobile.api.hhmm
 import com.coffeely.mobile.api.statusKdsRu
 import com.coffeely.mobile.api.urgencyRu
+import com.coffeely.mobile.ui.PullRefresh
 import com.coffeely.mobile.ui.ThemeModeButton
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -75,6 +76,7 @@ fun BaristaScreen(api: ApiClient, onLogout: () -> Unit) {
     var entries by remember { mutableStateOf<List<QueueEntryDto>>(emptyList()) }
     var pointId by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var refreshing by remember { mutableStateOf(false) }
     var cancelCandidate by remember { mutableStateOf<QueueEntryDto?>(null) }
     val scope = rememberCoroutineScope()
 
@@ -83,6 +85,16 @@ fun BaristaScreen(api: ApiClient, onLogout: () -> Unit) {
             { entries = it.orders; pointId = it.point_id; error = null },
             { error = it.message },
         )
+    }
+
+    fun refreshNow() {
+        if (refreshing) return
+        scope.launch {
+            refreshing = true
+            refresh()
+            delay(500)
+            refreshing = false
+        }
     }
 
     // Realtime: подписка на канал точки; при обрыве — переподключение через 2 с.
@@ -139,8 +151,13 @@ fun BaristaScreen(api: ApiClient, onLogout: () -> Unit) {
             )
         },
     ) { padding ->
+        PullRefresh(
+            refreshing = refreshing,
+            onRefresh = { refreshNow() },
+            modifier = Modifier.fillMaxSize().padding(padding),
+        ) {
         LazyColumn(
-            Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp, vertical = 12.dp),
+            Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             error?.let {
@@ -180,6 +197,7 @@ fun BaristaScreen(api: ApiClient, onLogout: () -> Unit) {
             items(archive, key = { it.id }) { entry ->
                 KdsCard(entry, 1f, Modifier.animateItem(), ::act) { cancelCandidate = it }
             }
+        }
         }
     }
 
@@ -329,11 +347,24 @@ private fun KdsCard(
                     }
                     TextButton(onClick = { onCancel(entry) }) { Text("Отменить") }
                 }
-                "in_production" -> Button(onClick = { onAct(entry, "ready") }, Modifier.fillMaxWidth()) {
-                    Text("Готов")
+                "in_production" -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { onAct(entry, "ready") }, Modifier.weight(1f)) {
+                        Text("Готов")
+                    }
+                    // Ошибочно нажатый «Готов» возвращает заказ в работу.
+                    TextButton(onClick = { onAct(entry, "paid") }) { Text("← Вернуть") }
                 }
-                "ready" -> Button(onClick = { onAct(entry, "given_out") }, Modifier.fillMaxWidth()) {
-                    Text("Выдан")
+                "ready" -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { onAct(entry, "given_out") }, Modifier.weight(1f)) {
+                        Text("Выдан")
+                    }
+                    TextButton(onClick = { onAct(entry, "in_production") }) { Text("← Вернуть") }
+                }
+                "given_out" -> TextButton(onClick = { onAct(entry, "ready") }) {
+                    Text("← Вернуть к выдаче")
+                }
+                "cancelled" -> TextButton(onClick = { onAct(entry, "paid") }) {
+                    Text("← Вернуть в работу")
                 }
             }
         }

@@ -37,10 +37,16 @@ const (
 )
 
 // allowedTransitions — граф переходов, ведут бариста (M3) и клиент (отмена в M4).
+// Назад по производственной цепочке тоже можно: ошибочный тап «Готов»/«Выдан»
+// не должен требовать пересоздания заказа у гостя. Отменённый заказ можно
+// вернуть в работу — отмена всегда подтверждается диалогом, но промах пальцем
+// случается и там.
 var allowedTransitions = map[string]map[string]bool{
 	StatusPaid:         {StatusInProduction: true, StatusCancelled: true},
-	StatusInProduction: {StatusReady: true},
-	StatusReady:        {StatusGivenOut: true},
+	StatusInProduction: {StatusReady: true, StatusPaid: true},
+	StatusReady:        {StatusGivenOut: true, StatusInProduction: true},
+	StatusGivenOut:     {StatusReady: true},
+	StatusCancelled:    {StatusPaid: true},
 }
 
 // Order — заказ как он уходит в API.
@@ -419,6 +425,43 @@ func (s *Store) Transition(ctx context.Context, orderID, actorID, next string, n
 	}
 	if !allowedTransitions[current][next] {
 		return Order{}, fmt.Errorf("%s -> %s: %w", current, next, ErrBadTransition)
+	}
+
+	// Откат закрывающего статуса убирает событие, по которому считаются метрики:
+	// заказ, выданный или отменённый по ошибке, не должен попадать в отчёты
+	// дважды, когда бариста вернёт его и закроет снова.
+	if current == StatusGivenOut && next == StatusReady {
+		var at time.Time
+		err := tx.QueryRow(ctx,
+			`SELECT at FROM order_events
+			 WHERE order_id = $1 AND event = 'given_out'
+			 ORDER BY at DESC LIMIT 1`, orderID,
+		).Scan(&at)
+		if err != nil && err != pgx.ErrNoRows {
+			return Order{}, fmt.Errorf("orders: given_out event: %w", err)
+		}
+		if err == nil {
+			if _, err := tx.Exec(ctx,
+				`DELETE FROM order_events WHERE order_id = $1 AND event = 'given_out' AND at = $2`,
+				orderID, at,
+			); err != nil {
+				return Order{}, fmt.Errorf("orders: delete given_out event: %w", err)
+			}
+			if _, err := tx.Exec(ctx,
+				`DELETE FROM order_events WHERE order_id = $1 AND event = 'deadline_missed' AND at = $2`,
+				orderID, at,
+			); err != nil {
+				return Order{}, fmt.Errorf("orders: delete deadline_missed event: %w", err)
+			}
+		}
+	}
+	if current == StatusCancelled && next == StatusPaid {
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM order_events WHERE order_id = $1 AND event = 'cancelled'`,
+			orderID,
+		); err != nil {
+			return Order{}, fmt.Errorf("orders: delete cancelled event: %w", err)
+		}
 	}
 
 	if _, err := tx.Exec(ctx,

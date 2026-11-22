@@ -19,6 +19,18 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.ShoppingCart
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -34,28 +46,20 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberDrawerState
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.ExitToApp
-import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.Place
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -70,10 +74,13 @@ import com.coffeely.mobile.api.MenuItemDto
 import com.coffeely.mobile.api.OrderDto
 import com.coffeely.mobile.api.OrderItemRef
 import com.coffeely.mobile.api.PointDto
+import com.coffeely.mobile.api.distanceMeters
+import com.coffeely.mobile.api.formatDistance
 import com.coffeely.mobile.api.hhmm
 import com.coffeely.mobile.api.isActive
 import com.coffeely.mobile.api.statusRu
 import com.coffeely.mobile.api.waitMinutes
+import com.coffeely.mobile.ui.PullRefresh
 import com.coffeely.mobile.ui.ThemeDialog
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -147,21 +154,38 @@ private fun PointsScreen(
     var points by remember { mutableStateOf<List<PointDto>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
+    var refreshing by remember { mutableStateOf(false) }
     var tab by remember { mutableStateOf(HomeTab.LIST) }
     var showAbout by remember { mutableStateOf(false) }
     var showTheme by remember { mutableStateOf(false) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
+    suspend fun loadPoints() {
+        api.points().fold(
+            { points = it.points; error = null },
+            { error = it.message },
+        )
+        loading = false
+    }
+
     // Загрузка точек обновляется, пока экран открыт: ожидание меняется на глазах.
     LaunchedEffect(Unit) {
         while (true) {
-            api.points().fold(
-                { points = it.points; error = null },
-                { error = it.message },
-            )
-            loading = false
+            loadPoints()
             delay(10_000)
+        }
+    }
+
+    // Ручное обновление свайпом вниз. Небольшая пауза — чтобы иконка
+    // перезагрузки не мелькала одним кадром на быстром ответе API.
+    fun refreshNow() {
+        if (refreshing) return
+        scope.launch {
+            refreshing = true
+            loadPoints()
+            delay(500)
+            refreshing = false
         }
     }
 
@@ -262,6 +286,8 @@ private fun PointsScreen(
                     HomeTab.LIST -> PointsList(
                         points = points,
                         onOpen = onOpen,
+                        refreshing = refreshing,
+                        onRefresh = { refreshNow() },
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
@@ -361,43 +387,128 @@ private fun DrawerItem(
     }
 }
 
+// Строка списка точек: сама точка и расстояние до неё (null — координат нет
+// или гость не разрешил геолокацию).
+private data class PointRow(val point: PointDto, val distance: Double?)
+
 @Composable
 private fun PointsList(
     points: List<PointDto>,
     onOpen: (PointDto) -> Unit,
+    refreshing: Boolean,
+    onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val location = rememberUserLocation()
+    var query by rememberSaveable { mutableStateOf("") }
+
+    // Поиск — только по этому списку (на карте его нет). Сортировка: сначала
+    // ближайшие к гостю; без геолокации — серверный порядок по названию.
+    val rows = remember(points, query, location) {
+        val needle = query.trim()
+        points
+            .map { point ->
+                val distance = if (location != null && point.lat != null && point.lng != null) {
+                    distanceMeters(location.lat, location.lng, point.lat, point.lng)
+                } else {
+                    null
+                }
+                PointRow(point, distance)
+            }
+            .filter { row ->
+                needle.isBlank() ||
+                    row.point.title.contains(needle, ignoreCase = true) ||
+                    row.point.address.contains(needle, ignoreCase = true) ||
+                    row.point.brand_name.contains(needle, ignoreCase = true)
+            }
+            .sortedWith(compareBy { it.distance ?: Double.MAX_VALUE })
+    }
+
     Column(modifier.padding(horizontal = 16.dp)) {
         Text(
             "Выберите кофейню — покажем, когда будет готов ваш кофе",
             style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(vertical = 8.dp),
+            modifier = Modifier.padding(top = 8.dp, bottom = 8.dp),
         )
-        if (points.isEmpty()) {
-            Text(
-                "Рядом пока нет точек на карте — загляните во вкладку «Точка на карте».",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            return@Column
-        }
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(points) { p ->
-                PointCard(p, onOpen = { onOpen(p) })
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+            placeholder = { Text("Название или улица") },
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+            trailingIcon = if (query.isNotEmpty()) {
+                {
+                    IconButton(onClick = { query = "" }) {
+                        Icon(Icons.Filled.Close, contentDescription = "Очистить поиск")
+                    }
+                }
+            } else {
+                null
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(14.dp),
+        )
+        Text(
+            if (location != null) {
+                "Сначала ближайшие к вам"
+            } else {
+                "Разрешите геолокацию — покажем, какие кофейни ближе"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = if (location != null) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            modifier = Modifier.padding(bottom = 8.dp),
+        )
+        PullRefresh(
+            refreshing = refreshing,
+            onRefresh = onRefresh,
+            modifier = Modifier.weight(1f),
+        ) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (rows.isEmpty()) {
+                    item {
+                        Text(
+                            if (query.isBlank()) {
+                                "Рядом пока нет точек на карте — загляните во вкладку «Точка на карте»."
+                            } else {
+                                "Ничего не нашлось. Попробуйте название кофейни или улицу."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                items(rows, key = { it.point.id }) { row ->
+                    PointCard(
+                        point = row.point,
+                        distance = row.distance,
+                        onOpen = { onOpen(row.point) },
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun PointCard(point: PointDto, onOpen: () -> Unit) {
+private fun PointCard(point: PointDto, distance: Double?, onOpen: () -> Unit) {
     Card(Modifier.fillMaxWidth().clickable { onOpen() }) {
         Row(Modifier.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 PointTitle(point)
-                if (point.address.isNotBlank()) {
+                val meta = listOfNotNull(
+                    distance?.let { formatDistance(it) },
+                    point.address.takeIf { it.isNotBlank() },
+                ).joinToString(" · ")
+                if (meta.isNotBlank()) {
                     Spacer(Modifier.height(2.dp))
-                    Text(point.address, style = MaterialTheme.typography.bodySmall)
+                    Text(meta, style = MaterialTheme.typography.bodySmall)
                 }
                 Spacer(Modifier.height(4.dp))
                 Text(
@@ -437,14 +548,27 @@ private fun PointScreen(
     var cart by remember { mutableStateOf<Map<String, CartLine>>(emptyMap()) }
     var addonTarget by remember { mutableStateOf<MenuItemDto?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var refreshing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
-    LaunchedEffect(point.id) {
+    suspend fun loadMenu() {
         api.menu(point.id).fold(
-            { menu = it.menu },
+            { menu = it.menu; error = null },
             { error = it.message },
         )
+    }
+
+    LaunchedEffect(point.id) { loadMenu() }
+
+    fun refreshMenu() {
+        if (refreshing) return
+        scope.launch {
+            refreshing = true
+            loadMenu()
+            delay(500)
+            refreshing = false
+        }
     }
 
     // Добавки принадлежат товару: у каждого напитка свой набор.
@@ -544,7 +668,12 @@ private fun PointScreen(
             }
         },
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp)) {
+        PullRefresh(
+            refreshing = refreshing,
+            onRefresh = { refreshMenu() },
+            modifier = Modifier.fillMaxSize().padding(padding),
+        ) {
+            Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
             Card(
                 Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(
@@ -573,6 +702,12 @@ private fun PointScreen(
                         "Бариста возьмёт заказ в работу — точное время покажем " +
                             "на статусе заказа.",
                         style = MaterialTheme.typography.bodySmall,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        pickupWindowShort(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
                     )
                 }
             }
@@ -633,6 +768,7 @@ private fun PointScreen(
             }
             error?.let {
                 Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
             }
         }
     }
@@ -715,15 +851,31 @@ private fun OrdersScreen(api: ApiClient, onBack: () -> Unit, onOpen: (OrderDto) 
     var orders by remember { mutableStateOf<List<OrderDto>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
+    var refreshing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    suspend fun loadOrders() {
+        api.myOrders().fold(
+            { orders = it.orders; error = null },
+            { error = it.message },
+        )
+        loading = false
+    }
 
     LaunchedEffect(Unit) {
         while (true) {
-            api.myOrders().fold(
-                { orders = it.orders; error = null },
-                { error = it.message },
-            )
-            loading = false
+            loadOrders()
             delay(5_000)
+        }
+    }
+
+    fun refreshNow() {
+        if (refreshing) return
+        scope.launch {
+            refreshing = true
+            loadOrders()
+            delay(500)
+            refreshing = false
         }
     }
 
@@ -739,7 +891,12 @@ private fun OrdersScreen(api: ApiClient, onBack: () -> Unit, onOpen: (OrderDto) 
             )
         },
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
+        PullRefresh(
+            refreshing = refreshing,
+            onRefresh = { refreshNow() },
+            modifier = Modifier.fillMaxSize().padding(padding),
+        ) {
+        Column(Modifier.fillMaxSize().padding(16.dp)) {
             error?.let {
                 Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
@@ -790,10 +947,19 @@ private fun OrdersScreen(api: ApiClient, onBack: () -> Unit, onOpen: (OrderDto) 
                                     color = MaterialTheme.colorScheme.primary,
                                 )
                             }
+                            if (o.status == "ready") {
+                                Text(
+                                    "заберите в течение $PICKUP_WINDOW_MINUTES минут",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            }
                         }
                     }
                 }
             }
+        }
         }
     }
 }
@@ -808,6 +974,8 @@ private fun OrderStatusScreen(
     onOpenOrders: () -> Unit,
 ) {
     var current by remember { mutableStateOf(order) }
+    var refreshing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(order.id) {
         // страховка на случай, если WS не поднялся (мобильная сеть, прокси)
@@ -825,6 +993,15 @@ private fun OrderStatusScreen(
                 }
             }
             delay(2_000)
+        }
+    }
+    fun refreshNow() {
+        if (refreshing) return
+        scope.launch {
+            refreshing = true
+            api.order(current.id).fold({ current = it }, { /* повторит поллинг */ })
+            delay(500)
+            refreshing = false
         }
     }
     Scaffold(
@@ -849,10 +1026,14 @@ private fun OrderStatusScreen(
             }
         },
     ) { padding ->
+        PullRefresh(
+            refreshing = refreshing,
+            onRefresh = { refreshNow() },
+            modifier = Modifier.fillMaxSize().padding(padding),
+        ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
                 .verticalScroll(rememberScrollState())
                 .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -877,6 +1058,10 @@ private fun OrderStatusScreen(
                 },
                 style = MaterialTheme.typography.titleLarge,
             )
+            if (current.status == "ready") {
+                Spacer(Modifier.height(16.dp))
+                PickupWindowNotice()
+            }
             if (current.status == "paid") {
                 Spacer(Modifier.height(12.dp))
                 Text(
@@ -915,6 +1100,45 @@ private fun OrderStatusScreen(
                         )
                     }
                 }
+            }
+        }
+        }
+    }
+}
+
+// Окно выдачи: готовый кофе ждёт гостя ограниченное время. Формулировка
+// нейтральная, без «выбросим»: «утилизировать» — то же самое, но по-человечески.
+private const val PICKUP_WINDOW_MINUTES = 10
+
+private fun pickupWindowShort(): String =
+    "Готовый заказ нужно забрать в течение $PICKUP_WINDOW_MINUTES минут — " +
+        "иначе мы, к сожалению, будем вынуждены его утилизировать."
+
+@Composable
+private fun PickupWindowNotice(modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+    ) {
+        Row(
+            Modifier.padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Icon(Icons.Filled.Warning, contentDescription = null, modifier = Modifier.size(20.dp))
+            Column {
+                Text(
+                    "Заберите заказ в течение $PICKUP_WINDOW_MINUTES минут",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "После этого мы, к сожалению, будем вынуждены утилизировать " +
+                        "заказ: свежесть кофе гарантируем только в этом окне.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
         }
     }
