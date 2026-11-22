@@ -519,7 +519,7 @@ private fun PointCard(point: PointDto, distance: Double?, onOpen: () -> Unit) {
                             "закрыто · откроется в ${point.load.opens_at}"
                         !point.load.is_open -> "закрыто"
                         point.load.active_orders == 0 -> "свободно · кофе сделаем сразу"
-                        else -> "сейчас в очереди ${point.load.active_orders} — " +
+                        else -> "сейчас онлайн-очередь ${point.load.active_orders} — " +
                             "ваш кофе примерно через ${waitMinutes(point.load.wait_seconds)} мин"
                     },
                     style = MaterialTheme.typography.bodySmall,
@@ -689,7 +689,7 @@ private fun PointScreen(
                             !point.load.is_open && point.load.opens_at.isNotBlank() ->
                                 "Сейчас закрыто, откроемся в ${point.load.opens_at}"
                             totalItems == 0 ->
-                                "Сейчас очередь: ${point.load.active_orders} · " +
+                                "Сейчас онлайн-очередь: ${point.load.active_orders} · " +
                                     "обычно готовим ${waitMinutes(wait)} мин"
                             else ->
                                 "Ваш заказ будет готов примерно через ${waitMinutes(wait)} мин"

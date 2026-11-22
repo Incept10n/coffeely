@@ -228,6 +228,6 @@ private fun loadLabel(point: PointDto): String {
 
         !load.is_open -> "закрыто"
         load.active_orders == 0 -> "свободно · кофе сделаем сразу"
-        else -> "в очереди ${load.active_orders} · примерно ${waitMinutes(load.wait_seconds)} мин"
+        else -> "онлайн-очередь ${load.active_orders} · примерно ${waitMinutes(load.wait_seconds)} мин"
     }
 }
