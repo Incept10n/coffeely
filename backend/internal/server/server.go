@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Incept10n/coffeely/backend/internal/admin"
+	"github.com/Incept10n/coffeely/backend/internal/appversion"
 	"github.com/Incept10n/coffeely/backend/internal/auth"
 	"github.com/Incept10n/coffeely/backend/internal/config"
 	"github.com/Incept10n/coffeely/backend/internal/email"
@@ -101,6 +102,15 @@ func NewWithMailer(pool *pgxpool.Pool, cfg config.Config, mailer auth.CodeSender
 	mux.HandleFunc("POST /internal/admin/login", superHandlers.Login)
 	mux.Handle("GET /internal/admin/analytics",
 		superHandlers.RequireSecret(http.HandlerFunc(superHandlers.Analytics)))
+
+	// Реестр сборок приложения: публичная проверка обновлений + регистрация
+	// новых APK из CI и аварийная блокировка версии (X-Admin-Secret).
+	appVersionHandlers := appversion.NewHandlers(appversion.NewStore(pool))
+	mux.HandleFunc("GET /app/version", appVersionHandlers.Version)
+	mux.Handle("POST /internal/admin/app-versions",
+		superHandlers.RequireSecret(http.HandlerFunc(appVersionHandlers.Publish)))
+	mux.Handle("PATCH /internal/admin/app-versions/{platform}/{version_code}",
+		superHandlers.RequireSecret(http.HandlerFunc(appVersionHandlers.SetMandatory)))
 
 	// Заказы, KDS-очередь, realtime (M3) + клиентский флоу (M4)
 	pointsStore := points.NewStore(pool)

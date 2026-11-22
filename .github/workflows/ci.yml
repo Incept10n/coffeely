@@ -10,9 +10,16 @@ name: CI — build & push
 #   ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD,
 #   ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD — стабильный ключ подписи APK
 #   (иначе обновление поверх установленного приложения невозможно)
+#   ADMIN_CRM_SECRET — регистрация сборки в реестре обновлений (без него
+#   APK уедет в S3, но приложение не узнает о новой версии)
 #
 # APK публикуется в бакет `coffeely`: стабильная ссылка /coffeely/coffeely.apk
 # (её использует лендинг) + версия с коротким sha в /coffeely/builds/.
+# После загрузки сборка регистрируется в API (POST /internal/admin/app-versions):
+# GET /app/version отдаёт приложению, есть ли обновление и обязательно ли оно.
+# Обязательное (блокирующее) обновление помечается трейлером в сообщении
+# коммита: `Force-Update: true`. Отдельная строка «Force-Update» не нужна —
+# без неё обновление мягкое, пользователь может отложить.
 
 on:
   push:
@@ -236,3 +243,48 @@ jobs:
           # Проверяем, что файл реально отдаётся анонимно (так его качает лендинг).
           curl -fsS -o /dev/null -w "apk http %{http_code}, %{size_download} bytes\n" \
             "$S3_ENDPOINT/$S3_BUCKET/coffeely.apk"
+
+      - name: Регистрация сборки в реестре обновлений
+        if: github.event_name != 'pull_request'
+        env:
+          ADMIN_CRM_SECRET: ${{ secrets.ADMIN_CRM_SECRET }}
+        run: |
+          APK=dist/coffeely.apk
+          VERSION_CODE="$("$ANDROID_HOME/build-tools/36.0.0/aapt2" dump badging "$APK" \
+            | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" | head -1)"
+          VERSION_NAME="$("$ANDROID_HOME/build-tools/36.0.0/aapt2" dump badging "$APK" \
+            | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -1)"
+          SHA256="$(sha256sum "$APK" | cut -d' ' -f1)"
+          SIZE="$(stat -c%s "$APK")"
+          # Блокирующее обновление: трейлер в сообщении коммита. Старые версии
+          # после релиза увидят непроходимый экран «обновитесь».
+          if git log -1 --pretty=%B | grep -qiE '^Force-Update:[[:space:]]*true'; then
+            MANDATORY=true
+          else
+            MANDATORY=false
+          fi
+          if [ -z "$ADMIN_CRM_SECRET" ]; then
+            echo "::warning::секрет ADMIN_CRM_SECRET не задан — версия $VERSION_CODE не попала в реестр обновлений"
+            exit 0
+          fi
+          # jq экранирует changelog: тема коммита попадает в попап «что нового».
+          jq -n \
+            --arg platform android \
+            --argjson version_code "$VERSION_CODE" \
+            --arg version_name "$VERSION_NAME" \
+            --arg download_url "https://s3.inceptech.ru/coffeely/coffeely.apk" \
+            --arg sha256 "$SHA256" \
+            --argjson size_bytes "$SIZE" \
+            --argjson mandatory "$MANDATORY" \
+            --arg changelog "$(git log -1 --pretty=%s)" \
+            '{platform: $platform, version_code: $version_code, version_name: $version_name,
+              download_url: $download_url, sha256: $sha256, size_bytes: $size_bytes,
+              mandatory: $mandatory, changelog: $changelog}' > /tmp/release.json
+          cat /tmp/release.json
+          # Не валим релиз, если backend ещё не задеплоен с /app/version:
+          # APK в S3 уже лежит, пользователи качают его с лендинга.
+          curl -fsS -X POST "$API_BASE_URL/internal/admin/app-versions" \
+            -H "X-Admin-Secret: $ADMIN_CRM_SECRET" \
+            -H "Content-Type: application/json" \
+            --data @/tmp/release.json \
+            || echo "::warning::сборка не зарегистрирована в API — проверь деплой backend и ADMIN_CRM_SECRET"

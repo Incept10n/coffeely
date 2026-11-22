@@ -6,6 +6,9 @@
          использует только WebView, чтобы нарисовать круг вокруг пользователя. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- Обновление приложения напрямую (APK с сайта, не из Google Play):
+         без этого разрешения Android не откроет установщик для новой версии. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:icon="@mipmap/ic_launcher"
@@ -21,5 +24,18 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Установщику отдаём скачанный APK через FileProvider: файл лежит в
+             приватном каталоге приложения, наружу торчит только content:// URI
+             с разовым разрешением на чтение. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/update_paths" />
+        </provider>
     </application>
 </manifest>

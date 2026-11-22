@@ -19,6 +19,7 @@ import com.coffeely.mobile.api.UserDto
 import com.coffeely.mobile.screens.BaristaScreen
 import com.coffeely.mobile.screens.ClientFlow
 import com.coffeely.mobile.screens.LoginScreen
+import com.coffeely.mobile.screens.UpdateGate
 import com.coffeely.mobile.ui.CoffeelyTheme
 
 @Composable
@@ -66,15 +67,19 @@ fun App() {
             modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background,
         ) {
-            val current = user
-            when {
-                booting -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
-                }
+            // Обновление проверяется до входа: заблокированная версия не должна
+            // даже дойти до логина, иначе гость решит, что «сервер сломался».
+            UpdateGate(api) {
+                val current = user
+                when {
+                    booting -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
 
-                current == null -> LoginScreen(api) { user = it }
-                current.role == "barista" -> BaristaScreen(api, onLogout = ::logout)
-                else -> ClientFlow(api, onLogout = ::logout)
+                    current == null -> LoginScreen(api) { user = it }
+                    current.role == "barista" -> BaristaScreen(api, onLogout = ::logout)
+                    else -> ClientFlow(api, onLogout = ::logout)
+                }
             }
         }
     }

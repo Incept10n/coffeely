@@ -299,7 +299,7 @@ private fun PointsScreen(
     }
 
     ThemeDialog(open = showTheme, onDismiss = { showTheme = false })
-    if (showAbout) MapAboutDialog(onClose = { showAbout = false })
+    if (showAbout) MapAboutDialog(api = api, onClose = { showAbout = false })
 }
 
 // Две выделяющиеся области в шапке: карта и список. Раньше это были

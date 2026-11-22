@@ -70,6 +70,11 @@ class ApiClient(baseUrl: String = platformApiBaseUrl()) {
     // Яндекс ID как дополнительный способ входа: токен приходит из LoginSDK.
     suspend fun authProviders(): Result<ProvidersResponse> = runCatching { getJson("/auth/providers") }
 
+    // Проверка обновлений приложения. Эндпоинт публичный: спрашиваем до входа,
+    // иначе гость со сломанной версией упрётся в логин и не узнает об обновлении.
+    suspend fun appVersion(versionCode: Int): Result<AppVersionDto> = runCatching {
+        getJson("/app/version?platform=$platformName&version_code=$versionCode")
+    }
     suspend fun loginWithYandex(token: String): Result<AuthResponse> = runCatching {
         postJson("/auth/yandex/token", YandexTokenRequest(token))
     }

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Что FileProvider может отдавать установщику: только наш скачанный APK в
+     приватном каталоге приложения. Корень external-files-path — тот же каталог,
+     куда DownloadManager кладёт файл (Environment.DIRECTORY_DOWNLOADS = Download/). -->
+<paths>
+    <external-files-path name="updates" path="Download/" />
+</paths>

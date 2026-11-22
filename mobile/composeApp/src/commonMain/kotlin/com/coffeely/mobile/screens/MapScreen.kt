@@ -21,13 +21,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
+import com.coffeely.mobile.api.ApiClient
 import com.coffeely.mobile.api.PointDto
+import com.coffeely.mobile.api.currentVersionCode
+import com.coffeely.mobile.api.currentVersionName
 import com.coffeely.mobile.api.waitMinutes
+import com.coffeely.mobile.update.UpdateCenter
+import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -145,17 +151,54 @@ private fun ShopCard(
 
 /**
  * Условие бесплатного Tiles API: ссылка на условия Яндекс Карт обязана быть
- * доступна из приложения. Открываем её из бургер-меню («О программе»).
+ * доступна из приложения. Здесь же версия сборки и ручная проверка обновлений:
+ * попап при старте можно закрыть «Позже», но вернуться к нему надо уметь.
  */
 @Composable
-fun MapAboutDialog(onClose: () -> Unit) {
+fun MapAboutDialog(api: ApiClient, onClose: () -> Unit) {
     val uri = LocalUriHandler.current
+    val scope = rememberCoroutineScope()
+    var checkMessage by remember { mutableStateOf<String?>(null) }
+    val update = UpdateCenter.info
     AlertDialog(
         onDismissRequest = onClose,
         title = { Text("О программе") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("coffeely — предзаказ кофе к точному времени готовности.")
+                Text(
+                    "Версия $currentVersionName · сборка $currentVersionCode",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                if (UpdateCenter.available) {
+                    TextButton(
+                        onClick = {
+                            UpdateCenter.requestPrompt()
+                            onClose()
+                        },
+                    ) {
+                        Text("Обновить до ${update?.latest_version_name.orEmpty()}")
+                    }
+                } else {
+                    TextButton(
+                        enabled = !UpdateCenter.checking,
+                        onClick = {
+                            scope.launch {
+                                UpdateCenter.refresh(api)
+                                checkMessage = when {
+                                    UpdateCenter.available -> "Доступна новая версия."
+                                    UpdateCenter.checkFailed -> "Не удалось проверить: нет связи с сервером."
+                                    else -> "У вас последняя версия."
+                                }
+                            }
+                        },
+                    ) {
+                        Text(if (UpdateCenter.checking) "Проверяем…" else "Проверить обновления")
+                    }
+                }
+                checkMessage?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall)
+                }
                 Text("Карта: Яндекс Карты.")
                 TextButton(
                     onClick = {

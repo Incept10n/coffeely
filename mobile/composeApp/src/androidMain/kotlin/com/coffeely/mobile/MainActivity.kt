@@ -9,6 +9,8 @@ import androidx.activity.enableEdgeToEdge
 import com.coffeely.mobile.api.SessionStorage
 import com.coffeely.mobile.ui.ThemePreference
 import com.coffeely.mobile.ui.ThemeStorage
+import com.coffeely.mobile.update.AndroidAppContext
+import com.coffeely.mobile.update.UpdateStorage
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -25,6 +27,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // Хранилище сессии нужно до первого экрана: гость не логинится заново.
         SessionStorage.init(this)
+        // Проверка обновлений: контекст для установщика и последняя политика
+        // на случай офлайн-старта заблокированной версии.
+        AndroidAppContext.init(this)
+        UpdateStorage.init(this)
         // Тема — до первого кадра, иначе при тёмной теме мелькнёт кремовый фон.
         ThemeStorage.init(this)
         ThemePreference.restore()

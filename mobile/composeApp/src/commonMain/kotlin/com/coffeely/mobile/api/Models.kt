@@ -182,6 +182,24 @@ data class LogoutRequest(val refresh_token: String)
 @Serializable
 data class ProvidersResponse(val yandex: Boolean = false)
 
+// Ответ GET /app/version: что сервер думает про эту сборку приложения.
+// update_required — версия ниже минимально допустимой: войти нельзя, только
+// обновиться. update_available — есть новее, но обновиться можно и потом.
+@Serializable
+data class AppVersionDto(
+    val platform: String = "android",
+    val client_version_code: Int = 0,
+    val update_available: Boolean = false,
+    val update_required: Boolean = false,
+    val latest_version_code: Int = 0,
+    val latest_version_name: String = "",
+    val min_supported_version_code: Int = 0,
+    val download_url: String = "",
+    val sha256: String = "",
+    val size_bytes: Long = 0,
+    val changelog: String = "",
+)
+
 // Токен из LoginSDK: сервер проверит его в Яндексе и выдаст свою сессию.
 @Serializable
 data class YandexTokenRequest(val token: String)
