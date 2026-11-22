@@ -914,8 +914,9 @@ function AddPointForm({
         <div className="owner__map-picker">
           <p className="owner__menu-editor-title">Где точка на карте</p>
           <p className="owner__hint owner__hint--tight">
-            Найдите адрес на карте и поставьте пин. Без координат точка не появится
-            на карте у гостей, но останется в списке.
+            Найдите адрес на карте и поставьте пин. Если вы стоите в кофейне,
+            нажмите «Найти меня», затем «Поставить пин здесь». Без координат
+            точка не появится на карте у гостей, но останется в списке.
           </p>
           <PointsMap
             mode="picker"
@@ -1219,8 +1220,9 @@ function EditPointForm({ point, onSaved }: { point: Point; onSaved: () => void |
       <div className="owner__map-picker">
         <p className="owner__menu-editor-title">Где точка на карте</p>
         <p className="owner__hint owner__hint--tight">
-          Найдите адрес на карте и поставьте пин. Без координат точка не появится
-          на карте у гостей, но останется в списке.
+          Найдите адрес на карте и поставьте пин. Если вы стоите в кофейне,
+          нажмите «Найти меня», затем «Поставить пин здесь». Без координат
+          точка не появится на карте у гостей, но останется в списке.
         </p>
         <PointsMap
           mode="picker"

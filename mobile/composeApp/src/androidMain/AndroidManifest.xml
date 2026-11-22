@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- Кнопка «Где я» на карте: координаты не уходят на наш сервер, их
+    <!-- Кнопка «Найти меня» на карте: координаты не уходят на наш сервер, их
          использует только WebView, чтобы нарисовать круг вокруг пользователя. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />

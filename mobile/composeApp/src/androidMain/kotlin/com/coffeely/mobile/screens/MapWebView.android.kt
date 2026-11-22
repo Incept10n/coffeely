@@ -87,7 +87,7 @@ actual fun MapWebView(
     // страницу. Любой другой адрес уходит во внешний браузер.
     val mapOrigin = remember(base) { Uri.parse(base) }
 
-    // Кнопка «Где я» на странице карты просит геолокацию у WebView. Пока
+    // Кнопка «Найти меня» на странице карты просит геолокацию у WebView. Пока
     // системный диалог открыт, держим запрос здесь и отвечаем после выбора.
     val geoPrompt = remember { GeoPrompt() }
     val permissionLauncher = rememberLauncherForActivityResult(
