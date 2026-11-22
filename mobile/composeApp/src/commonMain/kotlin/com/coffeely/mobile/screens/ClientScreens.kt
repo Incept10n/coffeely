@@ -47,6 +47,7 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.runtime.Composable
@@ -197,6 +198,11 @@ private fun PointsScreen(
                     )
                 }
                 Spacer(Modifier.height(12.dp))
+                // «Найти точки» — возврат на главный экран, где в шапке снова
+                // виден выбор «Точка на карте» / «Список точек».
+                DrawerItem("Найти точки", Icons.Filled.Search) {
+                    closeDrawer { tab = HomeTab.LIST }
+                }
                 DrawerItem("Мои заказы", Icons.Filled.ShoppingCart) {
                     closeDrawer(onOpenOrders)
                 }
