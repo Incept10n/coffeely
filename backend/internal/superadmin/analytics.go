@@ -788,10 +788,16 @@ func applyCapacity(p *Point, raw string, days int) {
 
 	start, err1 := parseHM(cfg.WorkStart)
 	end, err2 := parseHM(cfg.WorkEnd)
-	if err1 != nil || err2 != nil || end <= start {
+	if err1 != nil || err2 != nil || start >= 1440 || end > 1440 {
 		return
 	}
-	windows := (end - start) / cfg.WindowMinutes
+	// Время идёт вперёд: конец раньше начала — смена через полночь, совпадение —
+	// круглосуточно.
+	length := end - start
+	if length <= 0 {
+		length += 1440
+	}
+	windows := length / cfg.WindowMinutes
 	if windows <= 0 {
 		return
 	}

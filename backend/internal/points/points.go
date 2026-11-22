@@ -105,7 +105,8 @@ func AcceptETA(raw []byte) time.Duration {
 }
 
 // breakRanges — валидные перерывы в минутах от начала суток. Кривые записи
-// (не HH:MM, конец раньше начала) игнорируются: точка продолжает работать.
+// (не HH:MM, нулевая длина) игнорируются: точка продолжает работать. Перерыв
+// может идти через полночь (23:00–02:00): время всегда идёт вперёд.
 type breakRange struct{ start, end int }
 
 func breakRanges(cfg CapacityConfig) []breakRange {
@@ -113,12 +114,74 @@ func breakRanges(cfg CapacityConfig) []breakRange {
 	for _, b := range cfg.Breaks {
 		start, err1 := parseHM(b.Start)
 		end, err2 := parseHM(b.End)
-		if err1 != nil || err2 != nil || end <= start {
+		if err1 != nil || err2 != nil || start >= 1440 || end > 1440 || end == start {
 			continue
 		}
 		out = append(out, breakRange{start: start, end: end})
 	}
 	return out
+}
+
+// dayRange — отрезок суток в минутах от локальной полуночи. Время идёт вперёд:
+// конец раньше начала = отрезок через полночь (06:00–01:00 — это 19 часов),
+// совпадение = сутки целиком (круглосуточно).
+type dayRange struct {
+	start, end int
+	wrap       bool
+	full       bool
+}
+
+func newDayRange(start, end int) dayRange {
+	switch {
+	case end > start:
+		return dayRange{start: start, end: end}
+	case end < start:
+		return dayRange{start: start, end: end, wrap: true}
+	default:
+		return dayRange{start: start, end: 1440, full: true}
+	}
+}
+
+// contains — попадают ли минуты суток в отрезок.
+func (r dayRange) contains(minutes int) bool {
+	switch {
+	case r.full:
+		return true
+	case r.wrap:
+		return minutes >= r.start || minutes < r.end
+	default:
+		return minutes >= r.start && minutes < r.end
+	}
+}
+
+// segments — отрезок в виде интервалов [начало, конец) в минутах от полуночи
+// текущих суток. Для ночного отрезка нужны два: хвост прошлых суток и начало
+// следующих — иначе окно сразу после полуночи не увидит вчерашний отрезок.
+func (r dayRange) segments() [][2]int {
+	switch {
+	case r.full:
+		return [][2]int{{0, 1440}}
+	case r.wrap:
+		return [][2]int{{r.start - 1440, r.end}, {r.start, r.end + 1440}}
+	default:
+		return [][2]int{{r.start, r.end}}
+	}
+}
+
+// workRange — рабочие часы точки из capacity_config.
+func workRange(cfg CapacityConfig) (dayRange, error) {
+	start, err := parseHM(cfg.WorkStart)
+	if err != nil {
+		return dayRange{}, fmt.Errorf("work_start: %w", err)
+	}
+	end, err := parseHM(cfg.WorkEnd)
+	if err != nil {
+		return dayRange{}, fmt.Errorf("work_end: %w", err)
+	}
+	if start >= 1440 || end > 1440 {
+		return dayRange{}, fmt.Errorf("часы работы вне суток: %q–%q", cfg.WorkStart, cfg.WorkEnd)
+	}
+	return newDayRange(start, end), nil
 }
 
 // Load — текущая загрузка точки: сколько ждать, если заказать прямо сейчас.
@@ -310,13 +373,9 @@ func (s *Store) PlanSlot(ctx context.Context, tx pgx.Tx, pointID string, ownPrep
 		return SlotPlan{}, fmt.Errorf("points: queue prep: %w", err)
 	}
 
-	startMin, err := parseHM(capacity.WorkStart)
+	work, err := workRange(capacity)
 	if err != nil {
-		return SlotPlan{}, fmt.Errorf("points: work_start: %w", err)
-	}
-	endMin, err := parseHM(capacity.WorkEnd)
-	if err != nil {
-		return SlotPlan{}, fmt.Errorf("points: work_end: %w", err)
+		return SlotPlan{}, fmt.Errorf("points: часы работы: %w", err)
 	}
 	breaks := breakRanges(capacity)
 
@@ -332,9 +391,9 @@ func (s *Store) PlanSlot(ctx context.Context, tx pgx.Tx, pointID string, ownPrep
 		if candidate.After(deadlineLimit) {
 			break
 		}
-		wStart, wEnd, open := windowAt(candidate, loc, startMin, endMin, capacity.WindowMinutes)
+		wStart, wEnd, open := windowAt(candidate, loc, work, capacity.WindowMinutes)
 		if !open {
-			candidate = nextOpening(candidate, loc, startMin)
+			candidate = nextOpening(candidate, loc, work)
 			continue
 		}
 		// Окно должно начинаться не раньше, чем точка освободится: бариста
@@ -403,18 +462,17 @@ func openState(capacity CapacityConfig, tz string, now time.Time) (open bool, op
 	if err != nil {
 		return false, capacity.WorkStart, false
 	}
-	startMin, err1 := parseHM(capacity.WorkStart)
-	endMin, err2 := parseHM(capacity.WorkEnd)
-	if err1 != nil || err2 != nil {
+	work, err := workRange(capacity)
+	if err != nil {
 		return false, "", false
 	}
 	local := now.In(loc)
 	minutes := local.Hour()*60 + local.Minute()
-	if minutes < startMin || minutes >= endMin {
+	if !work.contains(minutes) {
 		return false, capacity.WorkStart, false
 	}
 	for _, b := range breakRanges(capacity) {
-		if minutes >= b.start && minutes < b.end {
+		if newDayRange(b.start, b.end).contains(minutes) {
 			return false, formatHM(b.end), true
 		}
 	}
@@ -429,45 +487,58 @@ func breakOverlapEnd(wStart, wEnd time.Time, loc *time.Location, breaks []breakR
 	}
 	local := wStart.In(loc)
 	dayStart := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
-	wStartMin := int(wStart.Sub(dayStart) / time.Minute)
-	wEndMin := int(wEnd.Sub(dayStart) / time.Minute)
 	for _, b := range breaks {
-		if wStartMin < b.end && wEndMin > b.start {
-			return dayStart.Add(time.Duration(b.end) * time.Minute), true
+		for _, seg := range newDayRange(b.start, b.end).segments() {
+			segStart := dayStart.Add(time.Duration(seg[0]) * time.Minute)
+			segEnd := dayStart.Add(time.Duration(seg[1]) * time.Minute)
+			if wStart.Before(segEnd) && wEnd.After(segStart) {
+				return segEnd, true
+			}
 		}
 	}
 	return time.Time{}, false
 }
 
-// windowAt — окно сетки, в которое попадает момент ts (или первое окно дня).
-// open=false — ts вне рабочих часов (в т.ч. до открытия: минуты < startMin).
-func windowAt(ts time.Time, loc *time.Location, startMin, endMin, windowMinutes int) (start, end time.Time, open bool) {
+// windowAt — окно сетки, в которое попадает момент ts. open=false — ts вне
+// рабочих часов (сетка начинается с открытия смены).
+func windowAt(ts time.Time, loc *time.Location, work dayRange, windowMinutes int) (start, end time.Time, open bool) {
 	if windowMinutes <= 0 {
 		windowMinutes = 5
 	}
 	local := ts.In(loc)
 	minutes := local.Hour()*60 + local.Minute()
-	if minutes >= endMin || minutes < startMin {
+	if !work.contains(minutes) {
 		return time.Time{}, time.Time{}, false
 	}
 	dayStart := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
-	offset := startMin
-	if minutes > startMin {
-		offset = startMin + ((minutes-startMin)/windowMinutes)*windowMinutes
+	base := dayStart.Add(time.Duration(work.start) * time.Minute)
+	// Сетка начинается с открытия. Если открытие сегодня ещё впереди, момент
+	// принадлежит сетке, начавшейся вчера (ночное окно и «круглосуточно»).
+	if base.After(ts) {
+		base = base.AddDate(0, 0, -1)
 	}
-	wStart := dayStart.Add(time.Duration(offset) * time.Minute)
+	wStart := gridWindow(ts, base, windowMinutes)
 	return wStart, wStart.Add(time.Duration(windowMinutes) * time.Minute), true
 }
 
-// nextOpening — начало рабочего дня, следующего за ts.
-func nextOpening(ts time.Time, loc *time.Location, startMin int) time.Time {
-	local := ts.In(loc)
-	minutes := local.Hour()*60 + local.Minute()
-	dayStart := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
-	if minutes < startMin {
-		return dayStart.Add(time.Duration(startMin) * time.Minute)
+// gridWindow — начало окна сетки длиной windowMinutes, в которое попадает ts.
+func gridWindow(ts, base time.Time, windowMinutes int) time.Time {
+	if delta := int(ts.Sub(base) / time.Minute); delta > 0 {
+		return base.Add(time.Duration((delta/windowMinutes)*windowMinutes) * time.Minute)
 	}
-	return dayStart.AddDate(0, 0, 1).Add(time.Duration(startMin) * time.Minute)
+	return base
+}
+
+// nextOpening — когда откроется после ts. Время идёт вперёд: если сегодняшнее
+// открытие уже прошло (например, точка закрылась в 01:00), ждём завтрашнее.
+func nextOpening(ts time.Time, loc *time.Location, work dayRange) time.Time {
+	local := ts.In(loc)
+	dayStart := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
+	today := dayStart.Add(time.Duration(work.start) * time.Minute)
+	if local.Before(today) {
+		return today
+	}
+	return today.AddDate(0, 0, 1)
 }
 
 func parseHM(hm string) (int, error) {

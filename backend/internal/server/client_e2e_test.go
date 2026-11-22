@@ -65,6 +65,16 @@ func parseTime(t *testing.T, v any) time.Time {
 	return ts
 }
 
+// hmMinutes — «HH:MM» в минуты от полуночи.
+func hmMinutes(t *testing.T, hm string) int {
+	t.Helper()
+	ts, err := time.Parse("15:04", hm)
+	if err != nil {
+		t.Fatalf("время %q: %v", hm, err)
+	}
+	return ts.Hour()*60 + ts.Minute()
+}
+
 // Тест: точки с загрузкой → меню → заказ без окна → окно назначено движком →
 // «мои заказы» → второй заказ получает следующее окно → бариста видит очередь.
 func TestClientFlowE2E(t *testing.T) {
@@ -278,6 +288,77 @@ func TestClosedPointE2E(t *testing.T) {
 	}
 	if code, _ := resp["code"].(string); code != "point_busy" {
 		t.Fatalf("код ошибки: %v", resp["code"])
+	}
+}
+
+// Ночная точка (конец смены раньше начала) открыта: время идёт вперёд, 22 часа
+// работы. Раньше такой конфиг означал «закрыто круглосуточно» → 409 point_busy.
+func TestOvernightPointE2E(t *testing.T) {
+	e := newTestEnv(t)
+	e.srv = httptest.NewServer(e.handler)
+	t.Cleanup(e.srv.Close)
+
+	moscow, err := time.LoadLocation("Europe/Moscow")
+	if err != nil {
+		t.Fatalf("tz: %v", err)
+	}
+	// Смена 22 часа: открытие через 3 часа, закрытие через час — «сейчас» внутри.
+	now := time.Now().In(moscow)
+	startHM := now.Add(3 * time.Hour).Format("15:04")
+	endHM := now.Add(time.Hour).Format("15:04")
+	cfg, _ := json.Marshal(map[string]any{
+		"window_minutes": 5, "max_orders_per_window": 3,
+		"work_start": startHM,
+		"work_end":   endHM,
+	})
+	var pointID, menuID string
+	if err := e.pool.QueryRow(context.Background(),
+		`INSERT INTO points (title, capacity_config) VALUES ('Ночная точка', $1) RETURNING id`, cfg,
+	).Scan(&pointID); err != nil {
+		t.Fatalf("seed overnight point: %v", err)
+	}
+	if err := e.pool.QueryRow(context.Background(),
+		`INSERT INTO menu_items (point_id, title, price_minor, prep_seconds) VALUES ($1, 'Эспрессо', 15000, 120) RETURNING id`,
+		pointID,
+	).Scan(&menuID); err != nil {
+		t.Fatalf("seed menu: %v", err)
+	}
+
+	client := registerClient(t, e)
+
+	// В списке точек ночная точка открыта.
+	_, resp := e.doJSON(t, "GET", "/points", client, nil)
+	var load map[string]any
+	for _, p := range resp["points"].([]any) {
+		pm := p.(map[string]any)
+		if pm["id"] == pointID {
+			load = pm["load"].(map[string]any)
+		}
+	}
+	if load == nil {
+		t.Fatalf("ночной точки нет в списке: %v", resp["points"])
+	}
+	if load["is_open"] != true {
+		t.Fatalf("ночная точка должна быть открыта: %v", load)
+	}
+
+	status, resp := e.doJSON(t, "POST", "/orders", client, map[string]any{
+		"point_id": pointID,
+		"items":    []map[string]any{{"menu_item_id": menuID, "qty": 1}},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("заказ в ночную точку: %d: %v", status, resp)
+	}
+	slot := parseTime(t, resp["pickup_slot_start"]).In(moscow)
+	// Сетка окон начинается с открытия смены: смещение от work_start кратно 5.
+	startMin := hmMinutes(t, startHM)
+	slotMin := slot.Hour()*60 + slot.Minute()
+	if (slotMin-startMin+1440)%5 != 0 || slot.Second() != 0 {
+		t.Fatalf("окно не выровнено по сетке от %s: %v", startHM, slot)
+	}
+	// Окно назначено в будущем — точка не «закрыта навсегда».
+	if !slot.After(now.Add(-time.Minute)) {
+		t.Fatalf("окно в прошлом: %v (сейчас %v)", slot, now)
 	}
 }
 

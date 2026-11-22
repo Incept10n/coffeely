@@ -894,6 +894,10 @@ function AddPointForm({
             <span>Конец работы</span>
             <input type="time" required value={form.workEnd} onChange={set("workEnd")} />
           </label>
+          <p className="owner__hint owner__hint--tight" style={{ gridColumn: "1 / -1", margin: 0 }}>
+            Время идёт вперёд: если конец раньше начала, точка работает через полночь
+            (06:00–01:00 — 19 часов). Одинаковое время — круглосуточно.
+          </p>
           <label className="field">
             <span>Бариста возьмёт заказ, мин</span>
             <input
@@ -1087,7 +1091,7 @@ function PointRow({
         </div>
         <div className="owner__row owner__row--tight">
           <span className="badge">
-            {cap.work_start}–{cap.work_end}
+            {workHoursLabel(cap.work_start, cap.work_end)}
             {(cap.breaks?.length ?? 0) > 0
               ? ` · перерывы ${cap.breaks!.map((b) => `${b.start}–${b.end}`).join(", ")}`
               : ""}
@@ -1195,6 +1199,10 @@ function EditPointForm({ point, onSaved }: { point: Point; onSaved: () => void |
           <span>Конец работы</span>
           <input type="time" required value={form.workEnd} onChange={set("workEnd")} />
         </label>
+        <p className="owner__hint owner__hint--tight" style={{ gridColumn: "1 / -1", margin: 0 }}>
+          Время идёт вперёд: если конец раньше начала, точка работает через полночь
+          (06:00–01:00 — 19 часов). Одинаковое время — круглосуточно.
+        </p>
         <label className="field">
           <span>Бариста возьмёт заказ, мин</span>
           <input
@@ -1782,6 +1790,21 @@ function cleanBreaks(breaks: Break[]): Break[] {
 
 function minorToRub(minor: number): string {
   return (minor / 100).toFixed(2).replace(/\.00$/, "");
+}
+
+// Часы работы в минутах от полуночи: «8:00» и «08:00» считаются одинаково.
+function hmToMinutes(value: string): number {
+  const [h, m] = value.split(":");
+  return (Number(h) || 0) * 60 + (Number(m) || 0);
+}
+
+// Время идёт вперёд: конец раньше начала — смена через полночь, совпадение —
+// круглосуточно. Подпись в списке точек должна это показывать, а не молчать.
+function workHoursLabel(start: string, end: string): string {
+  if (!start || !end) return "часы не заданы";
+  if (hmToMinutes(start) === hmToMinutes(end)) return "круглосуточно";
+  if (hmToMinutes(end) < hmToMinutes(start)) return `${start}–${end} (через полночь)`;
+  return `${start}–${end}`;
 }
 
 function AddBaristaForm({

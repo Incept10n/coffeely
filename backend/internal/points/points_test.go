@@ -47,27 +47,67 @@ func TestWindowGrid(t *testing.T) {
 		t.Fatalf("tz: %v", err)
 	}
 	at := func(h, m int) time.Time { return time.Date(2026, 11, 16, h, m, 30, 0, loc) }
+	day := newDayRange(480, 1200) // 08:00–20:00
 
 	// 10:03 → окно 10:00–10:05 (округление вниз — «в каком окне момент»)
-	if start, end, open := windowAt(at(10, 3), loc, 480, 1200, 5); !open ||
+	if start, end, open := windowAt(at(10, 3), loc, day, 5); !open ||
 		!start.Equal(time.Date(2026, 11, 16, 10, 0, 0, 0, loc)) || !end.Equal(start.Add(5*time.Minute)) {
 		t.Fatalf("10:03 → %v %v %v", start, end, open)
 	}
 	// вне рабочих часов — не окно
-	if _, _, open := windowAt(at(21, 0), loc, 480, 1200, 5); open {
+	if _, _, open := windowAt(at(21, 0), loc, day, 5); open {
 		t.Fatal("21:00 должно быть закрыто")
 	}
 	// до открытия — закрыто: «первое окно дня» назначает только
 	// nextOpening (и дальше работает лимит maxLead)
-	if _, _, open := windowAt(at(6, 0), loc, 480, 1200, 5); open {
+	if _, _, open := windowAt(at(6, 0), loc, day, 5); open {
 		t.Fatal("06:00 до открытия должно быть закрыто")
 	}
 	// nextOpening: до открытия — сегодня, после — завтра
-	if got := nextOpening(at(6, 0), loc, 480); !got.Equal(time.Date(2026, 11, 16, 8, 0, 0, 0, loc)) {
+	if got := nextOpening(at(6, 0), loc, day); !got.Equal(time.Date(2026, 11, 16, 8, 0, 0, 0, loc)) {
 		t.Fatalf("nextOpening 06:00 → %v", got)
 	}
-	if got := nextOpening(at(21, 0), loc, 480); !got.Equal(time.Date(2026, 11, 17, 8, 0, 0, 0, loc)) {
+	if got := nextOpening(at(21, 0), loc, day); !got.Equal(time.Date(2026, 11, 17, 8, 0, 0, 0, loc)) {
 		t.Fatalf("nextOpening 21:00 → %v", got)
+	}
+}
+
+func TestWindowGridOvernight(t *testing.T) {
+	loc, _ := time.LoadLocation("Europe/Moscow")
+	at := func(h, m int) time.Time { return time.Date(2026, 11, 16, h, m, 30, 0, loc) }
+	night := newDayRange(6*60, 1*60) // 06:00–01:00 — 19 часов через полночь
+
+	// 00:30 — ещё вчерашняя смена: окно 00:30–00:35 сегодня, но сетка от 06:00.
+	if start, end, open := windowAt(at(0, 30), loc, night, 5); !open ||
+		!start.Equal(time.Date(2026, 11, 16, 0, 30, 0, 0, loc)) || !end.Equal(start.Add(5*time.Minute)) {
+		t.Fatalf("00:30 в ночной смене → %v %v %v", start, end, open)
+	}
+	// 06:00 — первое окно смены
+	if start, _, open := windowAt(at(6, 0), loc, night, 5); !open ||
+		!start.Equal(time.Date(2026, 11, 16, 6, 0, 0, 0, loc)) {
+		t.Fatalf("06:00 → %v %v", start, open)
+	}
+	// 23:58 — последнее окно перед полуночью
+	if start, _, open := windowAt(at(23, 58), loc, night, 5); !open ||
+		!start.Equal(time.Date(2026, 11, 16, 23, 55, 0, 0, loc)) {
+		t.Fatalf("23:58 → %v %v", start, open)
+	}
+	// 03:00 — между закрытием в 01:00 и открытием в 06:00
+	if _, _, open := windowAt(at(3, 0), loc, night, 5); open {
+		t.Fatal("03:00 должно быть закрыто")
+	}
+	if got := nextOpening(at(3, 0), loc, night); !got.Equal(time.Date(2026, 11, 16, 6, 0, 0, 0, loc)) {
+		t.Fatalf("nextOpening 03:00 → %v", got)
+	}
+	// «Круглосуточно» (начало = конец): открыто в любое время, сетка от начала.
+	allDay := newDayRange(8*60, 8*60)
+	for _, h := range []int{0, 3, 9, 23} {
+		if _, _, open := windowAt(at(h, 15), loc, allDay, 5); !open {
+			t.Fatalf("%02d:15 круглосуточно должно быть открыто", h)
+		}
+	}
+	if start, _, _ := windowAt(at(3, 2), loc, allDay, 5); !start.Equal(time.Date(2026, 11, 16, 3, 0, 0, 0, loc)) {
+		t.Fatalf("сетка круглосуточной точки → %v", start)
 	}
 }
 
@@ -91,6 +131,31 @@ func TestOpenState(t *testing.T) {
 	}
 }
 
+func TestOpenStateOvernight(t *testing.T) {
+	loc, _ := time.LoadLocation("Europe/Moscow")
+	at := func(h, m int) time.Time { return time.Date(2026, 11, 16, h, m, 0, 0, loc) }
+	cfg := CapacityConfig{WindowMinutes: 5, MaxOrdersPerWindow: 3, WorkStart: "06:00", WorkEnd: "01:00", AcceptETAMinutes: defaultAcceptETA}
+
+	for _, hm := range [][2]int{{6, 0}, {12, 0}, {23, 59}, {0, 0}, {0, 30}} {
+		if open, _, _ := openState(cfg, "Europe/Moscow", at(hm[0], hm[1])); !open {
+			t.Fatalf("%02d:%02d в смене 06:00–01:00 должно быть открыто", hm[0], hm[1])
+		}
+	}
+	for _, hm := range [][2]int{{1, 0}, {3, 0}, {5, 59}} {
+		if open, opensAt, _ := openState(cfg, "Europe/Moscow", at(hm[0], hm[1])); open || opensAt != "06:00" {
+			t.Fatalf("%02d:%02d должно быть закрыто до 06:00: open=%v opens=%q", hm[0], hm[1], open, opensAt)
+		}
+	}
+
+	// Начало = конец — круглосуточно.
+	cfg.WorkStart, cfg.WorkEnd = "08:00", "08:00"
+	for _, hm := range [][2]int{{0, 15}, {3, 0}, {8, 0}, {23, 0}} {
+		if open, _, _ := openState(cfg, "Europe/Moscow", at(hm[0], hm[1])); !open {
+			t.Fatalf("круглосуточно: %02d:%02d должно быть открыто", hm[0], hm[1])
+		}
+	}
+}
+
 func TestBreakOverlapEnd(t *testing.T) {
 	loc, _ := time.LoadLocation("Europe/Moscow")
 	day := func(h, m int) time.Time { return time.Date(2026, 11, 16, h, m, 0, 0, loc) }
@@ -100,5 +165,19 @@ func TestBreakOverlapEnd(t *testing.T) {
 	}
 	if _, ok := breakOverlapEnd(day(14, 0), day(14, 5), loc, breaks); ok {
 		t.Fatal("окно после перерыва не пересекается")
+	}
+
+	// Перерыв через полночь 23:00–02:00: окно в 01:00 ждёт до 02:00, а окно
+	// вечером в 22:00 не пересекается.
+	nightBreak := []breakRange{{start: 23 * 60, end: 2 * 60}}
+	if got, ok := breakOverlapEnd(day(1, 0), day(1, 5), loc, nightBreak); !ok || !got.Equal(day(2, 0)) {
+		t.Fatalf("ночной перерыв в 01:00: %v %v", got, ok)
+	}
+	if got, ok := breakOverlapEnd(day(23, 10), day(23, 15), loc, nightBreak); !ok ||
+		!got.Equal(time.Date(2026, 11, 17, 2, 0, 0, 0, loc)) {
+		t.Fatalf("ночной перерыв в 23:10: %v %v", got, ok)
+	}
+	if _, ok := breakOverlapEnd(day(22, 0), day(22, 5), loc, nightBreak); ok {
+		t.Fatal("22:00 до перерыва не пересекается")
 	}
 }
