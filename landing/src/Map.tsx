@@ -355,8 +355,8 @@ export default function PointsMap({
             <svg
               className="map-locate__icon"
               viewBox="0 0 24 24"
-              width="16"
-              height="16"
+              width="18"
+              height="18"
               aria-hidden="true"
             >
               <path

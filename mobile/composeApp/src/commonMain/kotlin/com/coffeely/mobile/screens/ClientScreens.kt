@@ -16,7 +16,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -91,9 +93,13 @@ fun ClientFlow(api: ApiClient, onLogout: () -> Unit) {
         placed != null -> OrderStatusScreen(
             api = api,
             order = placed!!,
+            // «К списку точек» всегда ведёт на главный экран со списком:
+            // заказ мог быть открыт и из «Моих заказов», и с карты — во всех
+            // случаях закрываем и заказ, и экран заказов, и экран точки.
             onDone = {
                 placed = null
                 point = null
+                showOrders = false
             },
             onOpenOrders = {
                 placed = null
@@ -822,9 +828,27 @@ private fun OrderStatusScreen(
                 actions = { TextButton(onClick = onOpenOrders) { Text("Мои заказы") } },
             )
         },
+        // Кнопка закреплена внизу: длинный чек прокручивается, но «К списку
+        // точек» всегда на экране, а не уезжает за нижнюю границу.
+        bottomBar = {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 24.dp, vertical = 8.dp),
+            ) {
+                TextButton(onClick = onDone, modifier = Modifier.fillMaxWidth()) {
+                    Text("К списку точек")
+                }
+            }
+        },
     ) { padding ->
         Column(
-            modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Spacer(Modifier.height(24.dp))
@@ -886,8 +910,6 @@ private fun OrderStatusScreen(
                     }
                 }
             }
-            Spacer(Modifier.weight(1f))
-            TextButton(onClick = onDone) { Text("К списку точек") }
         }
     }
 }
